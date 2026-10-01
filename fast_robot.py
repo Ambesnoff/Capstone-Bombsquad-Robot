@@ -181,8 +181,10 @@ class FastRobot:
         self._temperature_trends = [0.0] * 4
         self._view: dict[str, Any] = {}
         self._view_lock = threading.Lock()
+        self._last_radio: Any = None
         self._live_status = live_status
         self._display_stop = threading.Event()
+        self._display_wake = threading.Event()
         self._display_thread: threading.Thread | None = None
         self._warned_at: dict[str, float] = {}
 
@@ -257,6 +259,10 @@ class FastRobot:
                         status.stationary(STATIONARY_RPM, self.config.feedback_timeout_ms) and
                         all(w.mode in (1, 2) for w in status.wheels)):
                     return status
+                if requested_at is not None:
+                    progress = status.stop_state if status.stop_state in (
+                        StopState.REQUESTED, StopState.IN_PROGRESS, StopState.UNCONFIRMED) else StopState.REQUESTED
+                    self._publish_stop(progress, status=status)
             except FastHatError:
                 pass
             if self._hat is not None and time.monotonic() - last_query >= 0.1:
@@ -271,20 +277,23 @@ class FastRobot:
         if self._hat is None:
             return
         self._stop_requested = True
+        self._publish_stop(StopState.REQUESTED)
         self._event("stop_requested")
         self._stop_at = time.monotonic()
-        self._last_command_seq = self._hat.stop()
-        # Receipt cannot prove stopped. Continue queries even if ACK fails/faults.
-        if wait_ack:
-            try:
+        try:
+            self._last_command_seq = self._hat.stop()
+            # Receipt cannot prove stopped. Continue queries even if ACK fails/faults.
+            if wait_ack:
                 status = self._wait_disarmed(max(2, self.config.stop_verify_ms / 1000 + 0.5),
                                               requested_at=self._stop_at,
                                               stop_sequence=self._last_command_seq)
+                self._publish_stop(StopState.CONFIRMED, status=status)
                 self._event("stop_confirmed", fault=status.fault_code)
-            except Exception as exc:
-                self._inspection_fault = f"STOP UNCONFIRMED: {exc}"
-                self._event("stop_unconfirmed", reason=str(exc))
-                raise
+        except Exception as exc:
+            self._inspection_fault = f"STOP UNCONFIRMED: {exc}"
+            self._publish_stop(StopState.UNCONFIRMED)
+            self._event("stop_unconfirmed", reason=str(exc))
+            raise
 
     def _verify_radio(self, *, neutral: bool = False) -> DriveRequest:
         if self._shutdown.is_set() or not self._running:
@@ -348,13 +357,11 @@ class FastRobot:
                 return self._inspection_fault
         return None
 
-    def _record(self, status: FastStatus, radio: Any) -> None:
+    def _status_view(self, status: FastStatus, radio: Any = None) -> dict[str, Any]:
         now = time.monotonic()
-        request = self._last_request
         telemetry = self._telemetry
         transmitter = getattr(self.radio, "transmitter", None)
-        stats = self._hat.stats() if self._hat else None
-        radio_age = None if radio.channels_at is None else round((now - radio.channels_at) * 1000)
+        radio_age = None if radio is None or radio.channels_at is None else round((now - radio.channels_at) * 1000)
         view = {"armed": bool(self.gate.armed and status.motion_enabled),
                 "requested_profile": self._operator_profile.name,
                 "applied_profile": status.applied_profile.name,
@@ -385,7 +392,34 @@ class FastRobot:
                         self._temperature_trends[index] = (wheel.temp_c - previous[0]) / (measured_at - previous[1])
                     self._temperature_samples[index] = (wheel.temp_c, measured_at)
             view["wheels"][index]["temperature_trend_c_s"] = self._temperature_trends[index]
-        view["condition"] = "STOP REQUESTED" if view["stop"] in ("REQUESTED", "IN_PROGRESS", "UNCONFIRMED") else "STOP CONFIRMED" if status.stop_confirmed else "DERATING" if status.applied_profile != status.requested_profile or status.reason_flags & (Reason.FIRMWARE_CEILING | Reason.THERMAL_DERATE) else "WARNING" if status.reason_flags or not status.feedback_fresh(self.config.feedback_timeout_ms) or not status.temperature_fresh(self.config.temp_stop_stale_ms) else "WITHIN LIMITS"
+        view["condition"] = "STOP UNCONFIRMED" if view["stop"] == "UNCONFIRMED" else "STOP REQUESTED" if view["stop"] in ("REQUESTED", "IN_PROGRESS") else "STOP CONFIRMED" if status.stop_confirmed else "DERATING" if status.applied_profile != status.requested_profile or status.reason_flags & (Reason.FIRMWARE_CEILING | Reason.THERMAL_DERATE) else "WARNING" if status.reason_flags or not status.feedback_fresh(self.config.feedback_timeout_ms) or not status.temperature_fresh(self.config.temp_stop_stale_ms) else "WITHIN LIMITS"
+        return view
+
+    def _publish_stop(self, stop: StopState, *, status: FastStatus | None = None) -> None:
+        """Publish local stop intent before transport I/O and observed progress after it."""
+        if status is not None:
+            view = self._status_view(status, self._last_radio)
+        else:
+            view = self.snapshot()
+        view.update(armed=False, stop=stop.name, stop_requested=True,
+                    inspection_fault=self._inspection_fault,
+                    condition="STOP CONFIRMED" if stop == StopState.CONFIRMED else
+                              "STOP UNCONFIRMED" if stop == StopState.UNCONFIRMED else "STOP REQUESTED")
+        with self._view_lock:
+            changed = any(self._view.get(key) != view.get(key)
+                          for key in ("stop", "hat_state", "fault", "inspection_fault"))
+            self._view = view
+        if changed:
+            self._display_wake.set()
+
+    def _record(self, status: FastStatus, radio: Any) -> None:
+        now = time.monotonic()
+        request = self._last_request
+        telemetry = self._telemetry
+        stats = self._hat.stats() if self._hat else None
+        self._last_radio = radio
+        view = self._status_view(status, radio)
+        radio_age = view["radio_age_ms"]
         with self._view_lock:
             self._view = view
         for peak, wheel in zip(self._peaks, status.wheels):
@@ -433,33 +467,50 @@ class FastRobot:
 
     def _display(self) -> None:
         """Console work can block only this status consumer, never commands."""
-        while not self._display_stop.wait(1 / self.settings.live_status_hz):
+        while not self._display_stop.is_set():
+            self._display_wake.wait(1 / self.settings.live_status_hz)
+            self._display_wake.clear()
+            if self._display_stop.is_set():
+                break
             view = self.snapshot()
-            if not view:
-                continue
-            wheels = " ".join(f"W{i}: {w['target_rpm']:+.2f}/{w['rpm']:+d}rpm {w['current_ma']/1000:+.2f}/{w['effective_cap_ma']/1000:.2f}A T={w['temp_c']}C/{w['temp_age_ms']}ms trend={w['temperature_trend_c_s']:+.2f}C/s valid={w['validity']} fb={w['age_ms']}ms err={w['error']} hold={w['hold_cap_ma']}mA"
-                              for i, w in enumerate(view["wheels"], 1))
-            LOG.info("%s %s requested=%s applied=%s stop=%s hold=%s Boost=%.1fs/refill=%.1fs radio=%sms cmd=%sms %s reasons=%s dropped=%s storage=%s",
-                     view["condition"], view["hat_state"], view["requested_profile"], view["applied_profile"], view["stop"], view["hold"],
-                     view["boost_remaining_ms"] / 1000, view["boost_refill_remaining_ms"] / 1000,
-                     view["radio_age_ms"], view["command_age_ms"], wheels, view["reasons"], view["logging_dropped_rows"], view["storage_error"])
-            warnings = []
-            if view["inspection_fault"]: warnings.append(view["inspection_fault"])
-            if view["fault"]: warnings.append(f"Protection stop wheel {view['fault_wheel']}, fault {view['fault']}; inspect status")
-            if view["stop"] in ("UNCONFIRMED", "IN_PROGRESS", "REQUESTED"): warnings.append("Stop unconfirmed; use independent motor-power cutoff if needed")
-            if "HOLD_LIMITED" in view["reasons"]: warnings.append("Holding limited; secure chassis against drift")
-            for i, w in enumerate(view["wheels"], 1):
-                if w["temp_c"] is not None and w["temp_c"] >= self.config.temp_warn_c:
-                    warnings.append(f"Wheel {i}: {w['temp_c']} C, trend {w['temperature_trend_c_s']:+.2f} C/s; reduce load and monitor temperature")
-                if int(w["reason_flags"]) & int(Reason.SPEED_ERROR | Reason.STALL_WARNING):
-                    warnings.append(f"Wheel {i}: current cap reached with low speed; inspect obstruction or reduce demand")
-            if not view["profile_valid"]: warnings.append(f"Profile switch: {view['profile_reason']}; verify SB/channel calibration")
-            if view["storage_error"]: warnings.append(f"Logging storage error: {view['storage_error']}")
-            for warning in warnings:
-                key = warning.split(":")[0]
-                if time.monotonic() - self._warned_at.get(key, 0) >= 5:
-                    LOG.warning("%s", warning)
-                    self._warned_at[key] = time.monotonic()
+            if view:
+                self._display_view(view)
+        # Drain the final snapshot explicitly, even if shutdown interrupted a
+        # periodic render. A stalled logger stays on this daemon consumer;
+        # the supervisor's join remains bounded and commands never log here.
+        view = self.snapshot()
+        if view:
+            self._display_view(view, terminal=True)
+
+    def _display_view(self, view: dict[str, Any], *, terminal: bool = False) -> None:
+        if "hat_state" not in view:
+            LOG.info("%s stop=%s", view["condition"], view["stop"])
+            if view["inspection_fault"]:
+                LOG.warning("%s", view["inspection_fault"])
+            return
+        wheels = " ".join(f"W{i}: {w['target_rpm']:+.2f}/{w['rpm']:+d}rpm {w['current_ma']/1000:+.2f}/{w['effective_cap_ma']/1000:.2f}A T={w['temp_c']}C/{w['temp_age_ms']}ms trend={w['temperature_trend_c_s']:+.2f}C/s valid={w['validity']} fb={w['age_ms']}ms err={w['error']} hold={w['hold_cap_ma']}mA"
+                          for i, w in enumerate(view["wheels"], 1))
+        LOG.info("%s %s requested=%s applied=%s stop=%s hold=%s Boost=%.1fs/refill=%.1fs radio=%sms cmd=%sms %s reasons=%s dropped=%s storage=%s",
+                 view["condition"], view["hat_state"], view["requested_profile"], view["applied_profile"], view["stop"], view["hold"],
+                 view["boost_remaining_ms"] / 1000, view["boost_refill_remaining_ms"] / 1000,
+                 view["radio_age_ms"], view["command_age_ms"], wheels, view["reasons"], view["logging_dropped_rows"], view["storage_error"])
+        warnings = []
+        if view["inspection_fault"]: warnings.append(view["inspection_fault"])
+        if view["fault"]: warnings.append(f"Protection stop wheel {view['fault_wheel']}, fault {view['fault']}; inspect status")
+        if view["stop"] in ("UNCONFIRMED", "IN_PROGRESS", "REQUESTED"): warnings.append("Stop unconfirmed; use independent motor-power cutoff if needed")
+        if "HOLD_LIMITED" in view["reasons"]: warnings.append("Holding limited; secure chassis against drift")
+        for i, w in enumerate(view["wheels"], 1):
+            if w["temp_c"] is not None and w["temp_c"] >= self.config.temp_warn_c:
+                warnings.append(f"Wheel {i}: {w['temp_c']} C, trend {w['temperature_trend_c_s']:+.2f} C/s; reduce load and monitor temperature")
+            if int(w["reason_flags"]) & int(Reason.SPEED_ERROR | Reason.STALL_WARNING):
+                warnings.append(f"Wheel {i}: current cap reached with low speed; inspect obstruction or reduce demand")
+        if not view["profile_valid"]: warnings.append(f"Profile switch: {view['profile_reason']}; verify SB/channel calibration")
+        if view["storage_error"]: warnings.append(f"Logging storage error: {view['storage_error']}")
+        for warning in warnings:
+            key = warning.split(":")[0]
+            if terminal or time.monotonic() - self._warned_at.get(key, 0) >= 5:
+                LOG.warning("%s", warning)
+                self._warned_at[key] = time.monotonic()
 
     def run(self) -> None:
         self._owner = threading.get_ident()
@@ -565,6 +616,7 @@ class FastRobot:
                 finally:
                     self._hat = None
                     self._display_stop.set()
+                    self._display_wake.set()
                     self._event("session_peaks", wheels=self._peaks)
                     self._telemetry.close()
                     if self._display_thread is not None:

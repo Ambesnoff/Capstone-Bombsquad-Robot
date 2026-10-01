@@ -80,6 +80,23 @@ static void refreshFeedback() {
     wheel[i].error = 0;
   }
 }
+static void assertInspectionLockout(FaultCode firstCause, uint8_t firstWheel) {
+  assert(inspectionRequired);
+  assert(faultCode == firstCause);
+  assert(faultWheel == firstWheel);
+  assert(state == FAULT);
+  assert(stopState == 3);
+  assert(!haveTargets);
+  for (const auto &w : wheel)
+    assert(w.error == 0);
+  const uint16_t acceptedBefore = lastAcceptedSequence;
+  ProtocolV2::ArmPayload p{{bootId, hostSession}, configId};
+  handleHostFrame(ARM, ++seq, reinterpret_cast<uint8_t *>(&p), sizeof(p));
+  assert(!armPending);
+  loop();
+  assert(!motionState());
+  assert(lastAcceptedSequence == acceptedBefore);
+}
 static void execute(const std::string &name) {
   if (name == "ramp") {
     near(advanceRampRpm(0, 40, .02f), 2.4f);
@@ -109,8 +126,9 @@ static void execute(const std::string &name) {
     hello();
     configure();
     simMotor[2].ignoreMode = true;
-    armPending = true;
-    armSequence = ++seq;
+    ProtocolV2::ArmPayload p{{bootId, hostSession}, configId};
+    handleHostFrame(ARM, ++seq, reinterpret_cast<uint8_t *>(&p), sizeof(p));
+    assert(armPending);
     processArm();
     assert(faultCode == MOTOR_FAULT);
     assert(stopPending);
@@ -133,6 +151,48 @@ static void execute(const std::string &name) {
     assert(stopState == 3);
     assert(state == DISARMED);
     assert(!haveTargets);
+    return;
+  }
+  if (name == "combined_motor_fault") {
+    ready();
+    simMotor[0].absent = true;
+    simMotor[1].error = 1;
+    runFor(200);
+    assert(faultCode == MOTOR_TIMEOUT);
+    assert(faultWheel == 1);
+    assert(wheel[1].error == 1);
+    simMotor[0].absent = false;
+    runFor(500);
+    simMotor[1].error = 0;
+    runFor(4000);
+    assertInspectionLockout(MOTOR_TIMEOUT, 1);
+    return;
+  }
+  if (name == "stop_motor_fault") {
+    ready();
+    trip(COMMAND_TIMEOUT);
+    // The transient error exists only during the actual stop transactions;
+    // later recovery polls never see it, so stop must preserve its severity.
+    simMotor[1].error = 1;
+    performStop();
+    simMotor[1].error = 0;
+    runFor(4000);
+    assertInspectionLockout(COMMAND_TIMEOUT, 0);
+    return;
+  }
+  if (name == "command_reply_motor_fault") {
+    ready();
+    trip(COMMAND_TIMEOUT);
+    loop();
+    runFor(100);
+    assert(stopState == 3);
+    // An error in a valid non-info reply must latch before a later healthy
+    // info reply overwrites the wheel's reported error byte.
+    simMotor[1].error = 1;
+    assert(motorTransaction(2, false, 0, 2, false) == MOTOR_OK);
+    simMotor[1].error = 0;
+    runFor(4000);
+    assertInspectionLockout(COMMAND_TIMEOUT, 0);
     return;
   }
   if (name == "repeat_stop_deadline") {

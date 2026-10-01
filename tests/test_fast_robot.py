@@ -11,7 +11,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from crsf import CRSFSnapshot
-from fast_hat import FastStatus, FastWheel, REQUIRED_CAPABILITIES
+from fast_hat import FastHatError, FastStatus, FastWheel, REQUIRED_CAPABILITIES
 from fast_robot import AsyncCsvTelemetry, FastRobot, fast_config
 from protocol_defs import ConfigResult, FaultCode, HatState, Profile, StopState
 from robot_main import Settings
@@ -297,3 +297,143 @@ class StopBoundaryTests(unittest.TestCase):
         # Only final shutdown starts a new explicit STOP; pending HAT fault stop
         # retains its verification timer throughout all inhibited control passes.
         self.assertEqual([c[0] for c in hat.commands].count("stop"),1)
+
+
+class ShutdownStatusTests(unittest.TestCase):
+    def shutdown(self, *, confirmed, live_status=False, before_shutdown=None):
+        observed = []
+        class StoppingHat(FakeFastHat):
+            def stop(self):
+                observed.append(robot.snapshot())
+                self.state=HatState.STOPPING;self.stop_state=StopState.IN_PROGRESS
+                self.targets_rpm=(0,0,0,0)
+                return self._send("stop")
+            def request_status(self):
+                observed.append(robot.snapshot())
+                self.queries+=1
+                if self.queries>=2:
+                    self.stop_state=StopState.CONFIRMED if confirmed else StopState.UNCONFIRMED
+                    if confirmed: self.state=HatState.DISARMED
+                return self.sequence
+        hat=StoppingHat();radio=PhaseRadio([{"arm":172},{"arm":1811},{"arm":1811,"throttle":1811}])
+        tmp=tempfile.TemporaryDirectory();self.addCleanup(tmp.cleanup)
+        robot=FastRobot(replace(settings(),live_status_hz=.1),radio,
+                        telemetry_path=Path(tmp.name)/"data.csv",live_status=live_status)
+        original_wait=robot._wait_disarmed;original_sleep=time.sleep
+        def wait(timeout,**kwargs):
+            return original_wait(.16 if kwargs else timeout,**kwargs)
+        def advance(duration):
+            if robot._shutdown.is_set():
+                original_sleep(duration)
+            elif radio.index==len(radio.phases)-1:
+                observed.append(robot.snapshot())
+                if before_shutdown: before_shutdown(robot)
+                robot.request_shutdown()
+            else:
+                radio.index+=1
+        with patch("fast_robot.FastHat",return_value=hat), \
+                patch.object(robot,"_wait_disarmed",side_effect=wait), \
+                patch("fast_robot.time.sleep",side_effect=advance):
+            if confirmed:
+                robot.run()
+            else:
+                with self.assertRaisesRegex(FastHatError,"Stop unconfirmed"):
+                    robot.run()
+        return robot,hat,observed
+
+    def test_shutdown_publishes_requested_progress_and_both_terminal_outcomes(self):
+        for confirmed in (True,False):
+            with self.subTest(confirmed=confirmed):
+                robot,hat,observed=self.shutdown(confirmed=confirmed)
+                self.assertTrue(observed[0]["armed"])
+                self.assertEqual(observed[0]["stop"],"NONE")
+                # The transport sees public stop intent before writing STOP.
+                self.assertFalse(observed[1]["armed"])
+                self.assertEqual(observed[1]["stop"],"REQUESTED")
+                self.assertEqual(observed[1]["condition"],"STOP REQUESTED")
+                progress=observed[2]
+                self.assertEqual(progress["hat_state"],"STOPPING")
+                self.assertEqual(progress["stop"],"IN_PROGRESS")
+                self.assertFalse(progress["armed"])
+                terminal=robot.snapshot()
+                outcome="CONFIRMED" if confirmed else "UNCONFIRMED"
+                self.assertEqual(terminal["stop"],outcome)
+                self.assertEqual(terminal["condition"],f"STOP {outcome}")
+                self.assertFalse(terminal["armed"])
+                if confirmed:
+                    self.assertIsNone(terminal["inspection_fault"])
+                else:
+                    self.assertIn("STOP UNCONFIRMED",terminal["inspection_fault"])
+                self.assertTrue(hat.closed)
+
+    def test_display_delivers_both_terminal_outcomes_without_periodic_tick(self):
+        for confirmed in (True,False):
+            with self.subTest(confirmed=confirmed):
+                lines=[];warnings=[];consumer_threads=[]
+                def logged(format,*args):
+                    consumer_threads.append(threading.get_ident())
+                    lines.append(format % args)
+                with patch("fast_robot.LOG.info",side_effect=logged), \
+                        patch("fast_robot.LOG.warning",side_effect=lambda format,*args:warnings.append(format % args)):
+                    robot,_,_=self.shutdown(confirmed=confirmed,live_status=True)
+                    robot._display_thread.join(.5)
+                self.assertFalse(robot._display_thread.is_alive())
+                outcome="CONFIRMED" if confirmed else "UNCONFIRMED"
+                self.assertTrue(any(f"stop={outcome}" in line for line in lines),lines)
+                self.assertEqual(set(consumer_threads),{robot._display_thread.ident})
+                if not confirmed:
+                    self.assertTrue(any("STOP UNCONFIRMED" in line for line in warnings),warnings)
+
+    def test_stalled_display_keeps_shutdown_bounded_and_drains_terminal_after_release(self):
+        rendering=threading.Event();release=threading.Event();terminal=threading.Event()
+        lines=[]
+        def logged(format,*args):
+            text=format % args
+            if not rendering.is_set():
+                rendering.set();release.wait(2)
+            lines.append(text)
+            if "stop=CONFIRMED" in text: terminal.set()
+        def stall_armed_display(robot):
+            robot._display_wake.set()
+            self.assertTrue(rendering.wait(.5))
+        try:
+            with patch("fast_robot.LOG.info",side_effect=logged),patch("fast_robot.LOG.warning"):
+                began=time.monotonic()
+                robot,_,_=self.shutdown(confirmed=True,live_status=True,before_shutdown=stall_armed_display)
+                self.assertLess(time.monotonic()-began,.8)
+                self.assertEqual(robot.snapshot()["stop"],"CONFIRMED")
+                self.assertTrue(robot._display_thread.is_alive())
+                release.set()
+                self.assertTrue(terminal.wait(.5),lines)
+                robot._display_thread.join(.5)
+                self.assertFalse(robot._display_thread.is_alive())
+        finally:
+            release.set()
+
+    def test_stop_transport_failure_publishes_unconfirmed_inspection_fault(self):
+        hat=FakeFastHat();robot=FastRobot(settings(),PhaseRadio([{}]),telemetry_path=Path("unused.csv"),live_status=False)
+        robot._hat=hat;hat.config=robot.config;hat.arm()
+        robot._record(hat.snapshot(),radio_frame(arm=1811))
+        def failed_stop():
+            self.assertEqual(robot.snapshot()["stop"],"REQUESTED")
+            raise FastHatError("STOP write failed")
+        hat.stop=failed_stop
+        with self.assertRaisesRegex(FastHatError,"STOP write failed"):
+            robot._safe_stop(wait_ack=True)
+        terminal=robot.snapshot()
+        self.assertEqual(terminal["stop"],"UNCONFIRMED")
+        self.assertIn("STOP write failed",terminal["inspection_fault"])
+
+    def test_repeated_stop_progress_refreshes_snapshot_without_flooding_display(self):
+        hat=FakeFastHat();robot=FastRobot(settings(),PhaseRadio([{}]),telemetry_path=Path("unused.csv"),live_status=False)
+        hat.state=HatState.STOPPING;hat.stop_state=StopState.IN_PROGRESS
+        status=hat.snapshot()
+        robot._publish_stop(StopState.IN_PROGRESS,status=status)
+        self.assertTrue(robot._display_wake.is_set())
+        robot._display_wake.clear()
+        refreshed=replace(status,wheels=tuple(replace(w,rpm=1) for w in status.wheels))
+        robot._publish_stop(StopState.IN_PROGRESS,status=refreshed)
+        self.assertEqual(robot.snapshot()["wheels"][0]["rpm"],1)
+        self.assertFalse(robot._display_wake.is_set())
+        robot._publish_stop(StopState.CONFIRMED,status=status)
+        self.assertTrue(robot._display_wake.is_set())

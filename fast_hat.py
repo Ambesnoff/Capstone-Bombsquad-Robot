@@ -220,9 +220,10 @@ def decode_status(payload: bytes, received_at: float | None = None) -> FastStatu
     for field, enum in (("state", HatState), ("stop_state", StopState),
                         ("requested_profile", Profile), ("applied_profile", Profile),
                         ("config_result", ConfigResult), ("reason_flags", Reason),
-                        ("capabilities", Capability), ("hold_flags", HoldFlag)):
+                        ("capabilities", Capability), ("hold_flags", HoldFlag),
+                        ("fault_code", FaultCode)):
         values[field] = enum(values[field])
-    if values["fault_wheel"] > 4 or values["fault_code"] not in FaultCode:
+    if values["fault_wheel"] > 4:
         raise ValueError("Invalid fault identity in STATUS")
     if values["boost_remaining_ms"] > values["boost_capacity_ms"]:
         raise ValueError("Invalid Boost budget in STATUS")

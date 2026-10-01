@@ -29,12 +29,12 @@ The fast example implements the user's updated requirements: **SB selects Gentle
 
 The complete Python test suite, generated-definition check, firmware-source identity check, actual ESP32 compilation, and fresh-checkout verification are release gates.
 
-- **86 tests pass**, including the actual firmware harness's **34 deterministic scenarios**. The original archived baseline separately passes its 44 tests.
+- **93 tests pass**, including the actual firmware harness's **45 deterministic scenarios**. The original archived baseline separately passed its 44 tests. All four subsequent code-review findings are fixed; see `CODE_REVIEW_FIXES.md` for changes and regression evidence.
 - Protocol generation, firmware source identity, both example configuration checks and Git whitespace checks pass.
-- A separate fresh Git clone repeats all 86 tests, both generated/source identity checks, both configuration checks, and actual ESP32 compilation successfully; its checkout stays clean.
+- The original implementation was verified in a separate fresh Git clone with all 86 then-current tests, both generated/source identity checks, both configuration checks, and actual ESP32 compilation. The review fixes pass the updated 93-test suite and the checks listed in `CODE_REVIEW_FIXES.md`.
 - Actual board: `esp32:esp32:esp32`, Arduino-ESP32 **3.3.12**, ESP-IDF **5.5.5**.
-- Firmware source SHA256: `7e039d421fba12bb221168ff74cfab72d3c1e0ae8f755a948403818c98966aea`; reported build ID `0x7e039d42`.
-- Fresh-checkout firmware compilation: **283080 bytes flash, 23044 bytes RAM** (the primary development checkout compiled to 283144 bytes flash).
+- Firmware source SHA256: `bf82bb7d88316ec81bf876dae3cf9849ce8f771e8ab5dc602da510937d7eebe5`; reported build ID `0xbf82bb7d`.
+- Firmware compilation after review fixes: **283444 bytes flash, 23068 bytes RAM**.
 - The native simulator is behavioral evidence. Its mechanics, temperature evolution and watchdog reboot modeling are not calibration of the real robot.
 
 Reproduce from the checkout:

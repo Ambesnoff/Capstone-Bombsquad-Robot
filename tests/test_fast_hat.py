@@ -5,6 +5,8 @@ import struct
 import threading
 import time
 import unittest
+from unittest.mock import patch
+from enum import EnumMeta
 
 from fast_hat import (
     Capability, ConfigResult, FastConfig, FastHat, FastHatError, FrameParser,
@@ -12,7 +14,7 @@ from fast_hat import (
     StopState, Validity, crc16_ccitt_false, decode_status, encode_frame,
 )
 from protocol_defs import (
-    CONFIG_PREFIX, CONFIG_STRUCT, STATUS_HEADER_FIELDS, STATUS_HEADER_STRUCT,
+    CONFIG_PREFIX, CONFIG_STRUCT, FaultCode, STATUS_HEADER_FIELDS, STATUS_HEADER_STRUCT,
     STATUS_LENGTH, TARGETS_STRUCT, WHEEL_FIELDS, WHEEL_STRUCT,
 )
 
@@ -165,6 +167,20 @@ class FrameTests(unittest.TestCase):
         s = decode_status(status_payload(wheel_overrides=dict(validity=Validity.TEMPERATURE)))
         self.assertFalse(s.stationary())
         self.assertTrue(s.temperature_fresh(750))
+
+    def test_fault_decoding_with_pre_312_enum_containment(self):
+        def legacy_contains(enum, member):
+            if not isinstance(member, enum):
+                raise TypeError("Raw values are unsupported before Python 3.12")
+            return member.name in enum.__members__
+
+        with patch.object(EnumMeta, '__contains__', legacy_contains):
+            for fault in FaultCode:
+                with self.subTest(fault=fault):
+                    status = decode_status(status_payload(fault=int(fault)))
+                    self.assertIs(status.fault_code, fault)
+            with self.assertRaises(ValueError):
+                decode_status(status_payload(fault=255))
 
     def test_status_rejects_invalid_fields(self):
         for changes in (dict(state=99), dict(fault=255), dict(stop_state=99),

@@ -34,19 +34,15 @@ static void performStop() {
     const MotorResult r = motorTransaction(id, true, 0, 0, false);
     if (r == MOTOR_OK)
       modes[id - 1] = wheel[id - 1].mode;
-    else if (faultCode == NO_FAULT) {
-      faultCode = motorFailure(r);
-      faultWheel = id;
-    }
+    else
+      latchFault(motorFailure(r), id);
   }
   for (uint8_t id = 1; id <= 4; id++)
     if (modes[id - 1] == 1 || modes[id - 1] == 2) {
       const MotorResult r =
           motorTransaction(id, false, 0, modes[id - 1], false);
-      if (r != MOTOR_OK && faultCode == NO_FAULT) {
-        faultCode = motorFailure(r);
-        faultWheel = id;
-      }
+      if (r != MOTOR_OK)
+        latchFault(motorFailure(r), id);
     }
   for (uint8_t id = 1; id <= 4; id++)
     sendMotorMode(id, 2);
@@ -54,10 +50,8 @@ static void performStop() {
     MotorResult r = motorTransaction(id, true, 0, 2, false);
     if (r == MOTOR_OK)
       r = motorTransaction(id, false, 0, 2, false);
-    if (r != MOTOR_OK && faultCode == NO_FAULT) {
-      faultCode = motorFailure(r);
-      faultWheel = id;
-    }
+    if (r != MOTOR_OK)
+      latchFault(motorFailure(r), id);
   }
   nextDisarmedPollMs = 0;
   stopping = false;
@@ -112,8 +106,10 @@ static void establishHold() {
   state = HOLDING;
 }
 static void processArm() {
+  const ProtocolV2::ArmPayload identity = pendingArmIdentity;
+  const uint16_t sequence = armSequence;
   armPending = false;
-  if (faultCode != NO_FAULT || !configured)
+  if (!armRequestFresh(identity, sequence))
     return;
   const bool preservingHold = state == HOLDING && disarmedHolding;
   if (!preservingHold) {
@@ -123,20 +119,25 @@ static void processArm() {
     if (!selectCurrentSafely())
       return;
   }
-  if (stopPending)
+  // Motor transactions poll the host. Recheck the original request after
+  // that IO so a newer command or session cannot be overwritten by this ARM.
+  if (!armRequestFresh(identity, sequence)) {
+    if (!preservingHold)
+      requestStop();
     return;
+  }
   // Preserve the anchor/integral/current when arming powered holding.
   disarmedHolding = false;
   state = preservingHold ? HOLDING : SETTLING;
   settleStartedMs = millis();
   stopState = 0;
-  acceptCommand(armSequence);
-  markApplied(armSequence);
+  acceptCommand(sequence);
+  markApplied(sequence);
   lastTargetMs = millis();
   haveTargets = true;
   memset(stagedTargetCentiRpm, 0, sizeof(stagedTargetCentiRpm));
   memset(targetCentiRpm, 0, sizeof(targetCentiRpm));
-  stagedSequence = armSequence;
+  stagedSequence = sequence;
   previousSweepUs = nextSweepUs = micros();
   completedProgress();
   sendStatus();
@@ -237,9 +238,7 @@ static void controlSweep() {
   sendStatus();
 }
 static bool recoverableFault() {
-  return faultCode == COMMAND_TIMEOUT || faultCode == MOTOR_TIMEOUT ||
-         faultCode == BAD_MOTOR_FRAME || faultCode == OVERTEMPERATURE ||
-         faultCode == TEMPERATURE_STALE;
+  return !inspectionRequired && recoverableFaultCode(faultCode);
 }
 static void pollDisarmed() {
   const uint32_t now = millis();
@@ -247,8 +246,8 @@ static void pollDisarmed() {
     return;
   nextDisarmedPollMs = now + 100;
   for (uint8_t id = 1; id <= 4; id++) {
-    // Faults never terminate this loop. Every wheel gets bounded stop polls,
-    // including mode repair; confirmation is independent of fault severity.
+    // Existing faults never terminate this loop. Every wheel gets bounded
+    // stop polls, including mode repair, independent of fault severity.
     MotorResult r = motorTransaction(id, true, 0, 0, true);
     if (r == MOTOR_INTERRUPTED)
       return;
@@ -260,14 +259,8 @@ static void pollDisarmed() {
       r = motorTransaction(id, false, 0, 2, true);
     if (r == MOTOR_OK)
       stopObserved[id - 1] = true;
-    else if (faultCode == NO_FAULT) {
-      faultCode = motorFailure(r);
-      faultWheel = id;
-      state = FAULT;
-    }
-    if (r == MOTOR_OK && wheel[id - 1].error && faultCode == NO_FAULT) {
-      faultCode = MOTOR_FAULT;
-      faultWheel = id;
+    else {
+      latchFault(motorFailure(r), id);
       state = FAULT;
     }
   }
@@ -283,7 +276,7 @@ static void pollDisarmed() {
     stopState = 4;
     stopVerificationPending = true;
     if (faultCode == NO_FAULT) {
-      faultCode = stationaryFresh() ? MOTOR_TIMEOUT : MOTOR_FAULT;
+      latchFault(stationaryFresh() ? MOTOR_TIMEOUT : MOTOR_FAULT);
       state = FAULT;
     }
   } else

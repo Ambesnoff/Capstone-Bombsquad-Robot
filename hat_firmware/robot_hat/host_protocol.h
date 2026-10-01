@@ -1,6 +1,14 @@
 #pragma once
 #include "build_identity.h"
 static uint64_t helloNonce = 0, sessionCounter = 0;
+static ProtocolV2::ArmPayload pendingArmIdentity{};
+static bool armRequestFresh(const ProtocolV2::ArmPayload &identity,
+                            uint16_t sequence) {
+  return configured && identity.session.boot_id == bootId &&
+         identity.session.host_session == hostSession &&
+         identity.config_id == configId && freshCommand(sequence) &&
+         faultCode == NO_FAULT && !stopPending && !stopping;
+}
 static void sendStatus() {
   ProtocolV2::StatusPayload payload{};
   auto &h = payload.header;
@@ -203,6 +211,9 @@ static void handleHostFrame(uint8_t type, uint16_t seq, const uint8_t *data,
       sendStatus();
       return;
     }
+    // An ARM names the configuration under which it was requested. A newly
+    // accepted configuration requires a new ARM, even while still disarmed.
+    armPending = false;
     cfg = candidate;
     configured = true;
     configId = id;
@@ -221,6 +232,7 @@ static void handleHostFrame(uint8_t type, uint16_t seq, const uint8_t *data,
       ((state == DISARMED && stopState == 3 && stationaryFresh(true)) ||
        (state == HOLDING && disarmedHolding && stationaryFresh(true)))) {
     armSequence = seq;
+    memcpy(&pendingArmIdentity, data, sizeof(pendingArmIdentity));
     armPending = true;
     return;
   }

@@ -100,6 +100,10 @@ static MotorResult motorTransaction(uint8_t id, bool info, int16_t command,
         } else
           updatePosition(w, static_cast<uint16_t>((reply[6] << 8) | reply[7]),
                          now);
+        // Capture every valid error reply, including stop transactions and
+        // info replies whose error may disappear before the next zero command.
+        if (w.error)
+          trip(MOTOR_FAULT, id);
         if (expectedMode && w.mode != expectedMode)
           return MOTOR_WRONG_MODE;
         return MOTOR_OK;

@@ -108,6 +108,8 @@ static ControllerConfig cfg;
 static Wheel wheel[WHEEL_COUNT];
 static DriveState state = BOOT_STOPPING;
 static FaultCode faultCode = NO_FAULT;
+// The first cause is diagnostic; a later inspection fault still requires reset.
+static bool inspectionRequired = false;
 static uint8_t faultWheel = 0, stopState = 1, requestedProfile = 0,
                appliedProfile = 0, stagedProfile = 0, configResult = 0;
 static bool configured = false, stopPending = false, armPending = false,
@@ -214,11 +216,21 @@ static bool stationaryFresh(bool ready = false) {
   }
   return true;
 }
-static void trip(FaultCode code, uint8_t id = 0) {
+static bool recoverableFaultCode(FaultCode code) {
+  return code == COMMAND_TIMEOUT || code == MOTOR_TIMEOUT ||
+         code == BAD_MOTOR_FRAME || code == OVERTEMPERATURE ||
+         code == TEMPERATURE_STALE;
+}
+static void latchFault(FaultCode code, uint8_t id = 0) {
+  if (code != NO_FAULT && !recoverableFaultCode(code))
+    inspectionRequired = true;
   if (faultCode == NO_FAULT) {
     faultCode = code;
     faultWheel = id;
   }
+}
+static void trip(FaultCode code, uint8_t id = 0) {
+  latchFault(code, id);
   armPending = false;
   haveTargets = false;
   if (!stopping && state != FAULT) {
