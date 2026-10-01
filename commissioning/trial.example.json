@@ -1,0 +1,22 @@
+{
+  "qualification": "NOT_QUALIFIED",
+  "hardware": {"motor_ids": [1, 2, 3, 4], "motor_power_cutoff_tested": false,
+    "computer_power_preserved": false, "load_kg": null, "terrain": "raised wheels"},
+  "release": {"firmware_build_id": null, "configuration_id": null, "release_sha256": null},
+  "acceptance_targets": {"max_stop_time_s": null, "max_stop_distance_m": null,
+    "max_hold_drift_m": null, "hold_duration_s": null, "max_temperature_c": null},
+  "measurements": {"stop_time_s": null, "stop_distance_m": null,
+    "hold_drift_m": null, "hold_duration_s": null, "peak_temperature_c": null,
+    "peak_motor_current_a": null, "worst_temperature_age_ms": null,
+    "worst_sweep_ms": null, "worst_command_application_ms": null},
+  "checks": {"directions": false, "mode_transitions": false, "inner_wheel_zero": false,
+    "radio_loss_no_rearm": false, "command_loss_no_rearm": false,
+    "power_reset_no_rearm": false, "boost_expiry_refill": false,
+    "thermal_derating_stop": false, "stalled_wheel": false, "independent_cutoff": false},
+  "requested_mode": "GENTLE",
+  "effective_current_ceiling_a": 1.2,
+  "higher_current_acceptance": false,
+  "warnings_and_stops": [],
+  "unresolved_conditions": ["All physical acceptance checks remain unmeasured."],
+  "next_single_change": null
+}

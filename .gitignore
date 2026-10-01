@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+.venv/
+config.json
+logs/
+tmp/
+output/
+sources/
+.DS_Store
+*.bin
+*.elf
+*.map
+*.csv
+commissioning/runs/

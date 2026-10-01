@@ -1,0 +1,110 @@
+{
+  "motor_backend": "fast",
+  "motor_port": "/dev/serial0",
+  "hat_baud": 230400,
+  "radio_port": "/dev/ttyAMA5",
+  "radio_baud": 420000,
+  "wheels": [
+    {
+      "id": 1,
+      "side": "left",
+      "polarity": -1
+    },
+    {
+      "id": 2,
+      "side": "right",
+      "polarity": 1
+    },
+    {
+      "id": 3,
+      "side": "right",
+      "polarity": 1
+    },
+    {
+      "id": 4,
+      "side": "left",
+      "polarity": -1
+    }
+  ],
+  "channels": {
+    "throttle": 3,
+    "steering": 1,
+    "arm": 8,
+    "reverse": 6,
+    "stop": 7,
+    "profile": 5
+  },
+  "max_rpm": 40,
+  "max_current_a": 1.2,
+  "neutral_braking_current_a": 0.3,
+  "acceleration_rpm_s": 120,
+  "deceleration_rpm_s": 180,
+  "steering_gain": 1.0,
+  "kp_a_per_rpm": 0.02,
+  "ki_a_per_rpm_s": 0.02,
+  "loop_period_s": 0.1,
+  "radio_timeout_s": 0.25,
+  "link_timeout_s": 0.6,
+  "motor_timeout_s": 0.15,
+  "hat_heartbeat_ms": 600,
+  "fast_period_ms": 15,
+  "fast_watchdog_ms": 300,
+  "fast_status_timeout_s": 0.2,
+  "stall_time_ms": 1000,
+  "temp_limit_c": 65,
+  "ff_ma_per_rpm_s": 0,
+  "profiles": {
+    "gentle_a": 0.8,
+    "normal_a": 1.5,
+    "boost_a": 2.5,
+    "independent_ceiling_a": 1.2,
+    "boost_capacity_s": 20.0,
+    "boost_refill_s": 60.0,
+    "cap_ramp_a_s": 1.0,
+    "debounce_s": 0.12,
+    "gentle_range": [
+      150,
+      350
+    ],
+    "normal_range": [
+      850,
+      1150
+    ],
+    "boost_range": [
+      1650,
+      1850
+    ]
+  },
+  "protection": {
+    "temp_warn_c": 50,
+    "temp_derate_c": 55,
+    "temp_release_c": 45,
+    "temp_hysteresis_c": 3,
+    "cooldown_dwell_ms": 3000,
+    "temp_boost_age_ms": 750,
+    "temp_stop_age_ms": 1500,
+    "hold_current_a": 0.3,
+    "hold_temp_c": 55,
+    "hold_kp_ma_per_degree": 2,
+    "hold_ki_ma_per_degree_s": 1,
+    "hold_damping_ma_per_rpm": 20,
+    "hold_enabled": true,
+    "stall_enabled": true,
+    "temp_poll_ms": 500,
+    "feedback_timeout_ms": 150,
+    "neutral_settle_ms": 300,
+    "disarmed_hold": false,
+    "stall_target_rpm": 8,
+    "stall_speed_rpm": 2,
+    "stall_current_a": 0.25,
+    "abnormal_current_a": 2.7,
+    "abnormal_current_ms": 200,
+    "abnormal_margin_a": 0.4,
+    "saturation_warn_ms": 500,
+    "stop_verify_ms": 1500
+  },
+  "radio_telemetry_enabled": false,
+  "radio_telemetry_hz": 2.0,
+  "telemetry_queue_rows": 32,
+  "live_status_hz": 1.0
+}

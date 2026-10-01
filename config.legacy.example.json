@@ -1,0 +1,32 @@
+{
+  "motor_port": "/dev/serial0",
+  "radio_port": "/dev/ttyAMA5",
+  "radio_baud": 420000,
+  "wheels": [
+    {"id": 1, "side": "left", "polarity": -1},
+    {"id": 2, "side": "right", "polarity": 1},
+    {"id": 3, "side": "right", "polarity": 1},
+    {"id": 4, "side": "left", "polarity": -1}
+  ],
+  "channels": {
+    "throttle": 3,
+    "steering": 1,
+    "current_dial": 10,
+    "arm": 5,
+    "reverse": 6,
+    "stop": 7
+  },
+  "max_rpm": 40,
+  "max_current_a": 1.0,
+  "neutral_braking_current_a": 0.3,
+  "acceleration_rpm_s": 120,
+  "deceleration_rpm_s": 180,
+  "steering_gain": 1.0,
+  "kp_a_per_rpm": 0.02,
+  "ki_a_per_rpm_s": 0.02,
+  "loop_period_s": 0.1,
+  "radio_timeout_s": 0.25,
+  "link_timeout_s": 0.6,
+  "motor_timeout_s": 0.15,
+  "hat_heartbeat_ms": 600
+}
