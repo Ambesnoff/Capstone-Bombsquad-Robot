@@ -12,7 +12,6 @@ import logging
 import math
 import signal
 import sys
-import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -27,8 +26,159 @@ CRSF_LOW = 172
 CRSF_HIGH = 1811
 
 
-from robot_config import Channels, Settings, Wheel, load_settings
-from robot_radio import Profile, ProfileSelector, calibrated_profile
+def _number(value: Any, name: str, minimum: float, maximum: float) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{name} must be a number")
+    result = float(value)
+    if not math.isfinite(result) or not minimum <= result <= maximum:
+        raise ValueError(f"{name} must be within {minimum}..{maximum}")
+    return result
+
+
+def _integer(value: Any, name: str, minimum: int, maximum: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or not minimum <= value <= maximum:
+        raise ValueError(f"{name} must be an integer within {minimum}..{maximum}")
+    return value
+
+
+@dataclass(frozen=True)
+class Wheel:
+    motor_id: int
+    side: str
+    polarity: int
+
+
+@dataclass(frozen=True)
+class Channels:
+    throttle: int
+    steering: int
+    current_dial: int
+    arm: int
+    reverse: int
+    stop: int
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "Channels":
+        names = ("throttle", "steering", "current_dial", "arm", "reverse", "stop")
+        values = {name: _integer(data[name], f"channels.{name}", 1, 16) for name in names}
+        if len(set(values.values())) != len(values):
+            raise ValueError("Every assigned control channel must be distinct")
+        return cls(**values)
+
+
+@dataclass(frozen=True)
+class Settings:
+    motor_port: str
+    radio_port: str
+    radio_baud: int
+    wheels: tuple[Wheel, ...]
+    channels: Channels
+    max_rpm: int
+    max_current_a: float
+    neutral_braking_current_a: float
+    acceleration_rpm_s: float
+    deceleration_rpm_s: float
+    steering_gain: float
+    kp_a_per_rpm: float
+    ki_a_per_rpm_s: float
+    loop_period_s: float
+    radio_timeout_s: float
+    link_timeout_s: float
+    motor_timeout_s: float
+    hat_heartbeat_ms: int
+    motor_backend: str
+    hat_baud: int
+    fast_period_ms: int
+    fast_watchdog_ms: int
+    fast_status_timeout_s: float
+    stall_time_ms: int
+    temp_limit_c: int
+    ff_ma_per_rpm_s: int
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "Settings":
+        motor_port = data["motor_port"]
+        radio_port = data["radio_port"]
+        for name, value in (("motor_port", motor_port), ("radio_port", radio_port)):
+            if not isinstance(value, str) or not value.strip() or "REPLACE" in value:
+                raise ValueError(f"Set a real {name} in the config file")
+        if motor_port == radio_port:
+            raise ValueError("The radio and HAT must use different serial ports")
+
+        wheel_data = data["wheels"]
+        if not isinstance(wheel_data, list) or not 1 <= len(wheel_data) <= 4:
+            raise ValueError("Configure one to four installed wheels")
+        wheels: list[Wheel] = []
+        for entry in wheel_data:
+            mid = _integer(entry["id"], "wheel.id", 1, 4)
+            side = entry["side"]
+            if side not in ("left", "right"):
+                raise ValueError("wheel.side must be left or right")
+            polarity = _integer(entry["polarity"], "wheel.polarity", -1, 1)
+            if polarity == 0:
+                raise ValueError("wheel.polarity must be -1 or 1")
+            wheels.append(Wheel(mid, side, polarity))
+        if len({wheel.motor_id for wheel in wheels}) != len(wheels):
+            raise ValueError("Wheel motor IDs must be unique")
+        if {wheel.side for wheel in wheels} != {"left", "right"}:
+            raise ValueError("At least one left and one right wheel are required")
+
+        backend = data.get("motor_backend", "legacy")
+        if backend not in ("legacy", "fast"):
+            raise ValueError("motor_backend must be legacy or fast")
+        if backend == "fast" and {wheel.motor_id for wheel in wheels} != {1, 2, 3, 4}:
+            raise ValueError("Fast HAT firmware requires exactly motor IDs 1, 2, 3, and 4")
+        hat_baud = _integer(data.get("hat_baud", 230400), "hat_baud", 115200, 1000000)
+        if backend == "fast" and hat_baud != 230400:
+            raise ValueError("Fast HAT firmware v1 uses 230400 baud on the Pi connection")
+
+        # Waveshare quotes 1.25 A rated on its product page (1.5 A on its
+        # wiki). Keep both transports within the conservative 1.2 A limit.
+        max_current = _number(data["max_current_a"], "max_current_a", 0.1, 1.2)
+        brake_current = _number(data["neutral_braking_current_a"], "neutral_braking_current_a", 0, 8.0)
+        if brake_current > max_current:
+            raise ValueError("neutral_braking_current_a cannot exceed max_current_a")
+        loop_period = _number(data["loop_period_s"], "loop_period_s", 0.05, 1)
+        radio_timeout = _number(data["radio_timeout_s"], "radio_timeout_s", 0.1, 2)
+        link_timeout = _number(data["link_timeout_s"], "link_timeout_s", 0.2, 3)
+        motor_timeout = _number(data["motor_timeout_s"], "motor_timeout_s", 0.05, 1)
+        heartbeat = _integer(data["hat_heartbeat_ms"], "hat_heartbeat_ms", 100, 2000)
+        if heartbeat / 1000 <= motor_timeout:
+            raise ValueError("HAT heartbeat must exceed motor transaction timeout")
+
+        return cls(
+            motor_port=motor_port,
+            radio_port=radio_port,
+            radio_baud=_integer(data.get("radio_baud", 420000), "radio_baud", 9600, 1000000),
+            wheels=tuple(wheels),
+            channels=Channels.from_dict(data["channels"]),
+            max_rpm=_integer(data["max_rpm"], "max_rpm", 1, 200 if backend == "fast" else 330),
+            max_current_a=max_current,
+            neutral_braking_current_a=brake_current,
+            acceleration_rpm_s=_number(data["acceleration_rpm_s"], "acceleration_rpm_s", 1, 1000),
+            deceleration_rpm_s=_number(data["deceleration_rpm_s"], "deceleration_rpm_s", 1, 2000),
+            steering_gain=_number(data["steering_gain"], "steering_gain", 0, 1),
+            kp_a_per_rpm=_number(data["kp_a_per_rpm"], "kp_a_per_rpm", 0, 1),
+            ki_a_per_rpm_s=_number(data["ki_a_per_rpm_s"], "ki_a_per_rpm_s", 0, 1),
+            loop_period_s=loop_period,
+            radio_timeout_s=radio_timeout,
+            link_timeout_s=link_timeout,
+            motor_timeout_s=motor_timeout,
+            hat_heartbeat_ms=heartbeat,
+            motor_backend=backend,
+            hat_baud=hat_baud,
+            fast_period_ms=_integer(data.get("fast_period_ms", 15), "fast_period_ms", 10, 100),
+            fast_watchdog_ms=_integer(data.get("fast_watchdog_ms", 300), "fast_watchdog_ms", 200, 1000),
+            fast_status_timeout_s=_number(data.get("fast_status_timeout_s", 0.2), "fast_status_timeout_s", 0.05, 1),
+            stall_time_ms=_integer(data.get("stall_time_ms", 1000), "stall_time_ms", 300, 5000),
+            temp_limit_c=_integer(data.get("temp_limit_c", 70), "temp_limit_c", 40, 70),
+            ff_ma_per_rpm_s=_integer(data.get("ff_ma_per_rpm_s", 0), "ff_ma_per_rpm_s", 0, 20),
+        )
+
+
+def load_settings(path: Path) -> Settings:
+    with path.open(encoding="utf-8") as file:
+        return Settings.from_dict(json.load(file))
 
 
 def normalized(raw: int) -> float:
@@ -52,10 +202,6 @@ def radio_healthy(snapshot: CRSFSnapshot, now: float, settings: Settings) -> boo
         snapshot.error is None
         and snapshot.channels is not None
         and len(snapshot.channels) == 16
-        and all(isinstance(v, int) and not isinstance(v, bool) and 0 <= v <= 2047 for v in snapshot.channels)
-        and all(100 <= snapshot.channels[number - 1] <= 1900 for number in (
-            settings.channels.throttle, settings.channels.steering, settings.channels.arm,
-            settings.channels.reverse, settings.channels.stop))
         and snapshot.channels_at is not None
         and 0 <= now - snapshot.channels_at <= settings.radio_timeout_s
         and snapshot.link_quality is not None
@@ -77,33 +223,21 @@ class DriveRequest:
     steering: float
     reverse: bool
     current_cap_a: float
-    profile: Profile = Profile.GENTLE
-    profile_valid: bool = True
 
 
-def drive_request(snapshot: CRSFSnapshot, settings: Settings,
-                  selector: ProfileSelector | None = None) -> DriveRequest:
+def drive_request(snapshot: CRSFSnapshot, settings: Settings) -> DriveRequest:
     assigned = settings.channels
     throttle = (channel(snapshot, assigned.throttle) + 1) / 2
     throttle = max(0.0, (throttle - 0.04) / 0.96)
     steering = _deadband(channel(snapshot, assigned.steering), 0.04)
-    if settings.motor_backend == "fast":
-        assert assigned.profile is not None
-        raw = snapshot.channels[assigned.profile - 1]
-        requested = calibrated_profile(raw, settings.profiles)
-        profile = selector.observe(raw, snapshot.channels_at) if selector else requested or Profile.GENTLE
-        valid = selector.valid if selector else requested is not None
-        # Candidate profile caps remain visible; the HAT owns final protection.
-        cap = getattr(settings.profiles, f"{profile.name.lower()}_a")
-    else:
-        assert assigned.current_dial is not None
-        dial = channel(snapshot, assigned.current_dial)
-        fraction = max(0.0, min(1.0, (dial + 0.8) / 1.8))
-        cap, profile, valid = fraction * settings.max_current_a, Profile.GENTLE, True
+    # The Pocket's S1 dial reportedly reaches about -80%, not -100%.
+    dial = channel(snapshot, assigned.current_dial)
+    fraction = max(0.0, min(1.0, (dial + 0.8) / 1.8))
     return DriveRequest(
-        throttle=throttle, steering=steering,
+        throttle=throttle,
+        steering=steering,
         reverse=channel(snapshot, assigned.reverse) > 0.5,
-        current_cap_a=cap, profile=profile, profile_valid=valid,
+        current_cap_a=fraction * settings.max_current_a,
     )
 
 
@@ -236,10 +370,8 @@ class Robot:
         self.controls = {wheel.motor_id: WheelControl() for wheel in settings.wheels}
         self._last_status = 0.0
         self._running = True
-        self._shutdown = threading.Event()
 
     def request_shutdown(self, *_args: Any) -> None:
-        self._shutdown.set()
         self._running = False
 
     @property
@@ -280,11 +412,8 @@ class Robot:
     def prepare_current_mode(self) -> None:
         assert self.hat is not None
         for wheel in self.settings.wheels:
-            self._verify_still_armed()
             feedback = self.hat.set_mode(wheel.motor_id, Mode.CURRENT)
             self._check_feedback(feedback)
-            if feedback.mode != Mode.CURRENT:
-                raise HatError(f"Motor {wheel.motor_id} current mode was not verified")
             control = self.controls[wheel.motor_id] = WheelControl()
             control.accept(feedback, time.monotonic())
         # Mode setup can take several transactions per wheel. Refresh all four
@@ -307,7 +436,7 @@ class Robot:
             hat.close()
 
     def _verify_still_armed(self) -> None:
-        if self._shutdown.is_set() or not self._running:
+        if not self._running:
             raise ShutdownRequested("Shutdown requested")
         snapshot = self.radio.snapshot()
         now = time.monotonic()
@@ -408,8 +537,6 @@ class ShutdownRequested(RuntimeError):
 def monitor_radio(settings: Settings) -> None:
     with CRSFReader(settings.radio_port, baudrate=settings.radio_baud) as radio:
         LOG.info("Listening to receiver; no motor connection will be opened")
-        if settings.motor_backend == "fast":
-            LOG.warning("Verify CH5 raw low/center/high. ELRS v3 requires Full 16chRate/2; Hybrid/Wide transmits CH5 as one bit.")
         while True:
             snapshot = radio.snapshot()
             now = time.monotonic()
@@ -418,7 +545,7 @@ def monitor_radio(settings: Settings) -> None:
             else:
                 mapped = {
                     name: round(channel(snapshot, number), 2)
-                    for name, number in vars(settings.channels).items() if number is not None
+                    for name, number in vars(settings.channels).items()
                 }
                 LOG.info("healthy=%s LQ=%s channels=%s", radio_healthy(snapshot, now, settings),
                          snapshot.link_quality, mapped)
@@ -431,8 +558,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", type=Path, default=Path("config.json"))
     parser.add_argument("--telemetry", type=Path, default=Path("robot_telemetry.csv"),
                         help="Fast backend CSV log written during run")
-    parser.add_argument("--live-status", action=argparse.BooleanOptionalAction, default=True,
-                        help="Display local measured profile, protection, holding and stop feedback")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     try:
@@ -458,12 +583,10 @@ def main(argv: list[str] | None = None) -> int:
             monitor_radio(settings)
             return 0
 
-        with CRSFReader(settings.radio_port, baudrate=settings.radio_baud,
-                        telemetry_enabled=settings.radio_telemetry_enabled,
-                        telemetry_hz=settings.radio_telemetry_hz) as radio:
+        with CRSFReader(settings.radio_port, baudrate=settings.radio_baud) as radio:
             if settings.motor_backend == "fast":
                 from fast_robot import FastRobot
-                robot = FastRobot(settings, radio, telemetry_path=args.telemetry, live_status=args.live_status)
+                robot = FastRobot(settings, radio, telemetry_path=args.telemetry)
             else:
                 robot = Robot(settings, radio)
             signal.signal(signal.SIGINT, robot.request_shutdown)
