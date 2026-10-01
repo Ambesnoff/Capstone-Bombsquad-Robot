@@ -84,19 +84,282 @@ class HoldFlag(IntFlag):
     LIMITED = 2
     DISARMED = 4
 
-CONFIG_FIELDS = ('max_rpm', 'max_current_ma', 'neutral_brake_ma', 'accel_rpm_s', 'decel_rpm_s', 'kp_ma_per_rpm', 'ki_ma_per_rpm_s', 'ff_ma_per_rpm_s', 'watchdog_ms', 'control_period_ms', 'stall_time_ms', 'gentle_current_ma', 'normal_current_ma', 'boost_current_ma', 'boost_capacity_ms', 'boost_refill_ms', 'temp_poll_ms', 'temp_boost_stale_ms', 'temp_stop_stale_ms', 'cooldown_ms', 'cap_ramp_ma_s', 'hold_current_ma', 'hold_kp_ma_per_degree', 'hold_ki_ma_per_degree_s', 'hold_damping_ma_per_rpm', 'neutral_settle_ms', 'feedback_timeout_ms', 'stall_target_centi_rpm', 'stall_speed_centi_rpm', 'stall_current_ma', 'abnormal_current_ma', 'abnormal_current_ms', 'abnormal_margin_ma', 'saturation_warn_ms', 'stop_verify_ms', 'temp_warn_c', 'temp_derate_c', 'temp_limit_c', 'temp_release_c', 'temp_hysteresis_c', 'hold_enabled', 'disarmed_hold_enabled', 'stall_enabled')
-CONFIG_FORMAT = '<HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHBBBBBBBB'
+class FaultCode(IntEnum):
+    NONE = 0
+    COMMAND_TIMEOUT = 1
+    MOTOR_TIMEOUT = 2
+    BAD_MOTOR_FRAME = 3
+    MOTOR_FAULT = 4
+    OVERSPEED = 5
+    OVERTEMPERATURE = 6
+    STALL = 7
+    ABNORMAL_CURRENT = 8
+    CONFIGURATION_FAULT = 9
+    TEMPERATURE_STALE = 10
+    CONTROL_PROGRESS = 11
+
+CONFIG_FIELDS = ('max_rpm', 'max_current_ma', 'neutral_brake_ma', 'accel_rpm_s', 'decel_rpm_s', 'kp_ma_per_rpm', 'ki_ma_per_rpm_s', 'ff_ma_per_rpm_s', 'watchdog_ms', 'control_period_ms', 'stall_time_ms', 'gentle_current_ma', 'normal_current_ma', 'boost_current_ma', 'boost_capacity_ms', 'boost_refill_ms', 'temp_poll_ms', 'temp_boost_stale_ms', 'temp_stop_stale_ms', 'cooldown_ms', 'cap_ramp_ma_s', 'hold_current_ma', 'hold_kp_ma_per_degree', 'hold_ki_ma_per_degree_s', 'hold_damping_ma_per_rpm', 'neutral_settle_ms', 'feedback_timeout_ms', 'stall_target_centi_rpm', 'stall_speed_centi_rpm', 'stall_current_ma', 'abnormal_current_ma', 'abnormal_current_ms', 'abnormal_margin_ma', 'saturation_warn_ms', 'stop_verify_ms', 'temp_warn_c', 'temp_derate_c', 'temp_limit_c', 'temp_release_c', 'temp_hysteresis_c', 'hold_enabled', 'disarmed_hold_enabled', 'stall_enabled', 'hold_temp_c', 'encoder_counts_per_rev')
+CONFIG_FORMAT = '<HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHBBBBBBBBBI'
 CONFIG_STRUCT = struct.Struct(CONFIG_FORMAT)
-CONFIG_OFFSETS = {'max_rpm': 0, 'max_current_ma': 2, 'neutral_brake_ma': 4, 'accel_rpm_s': 6, 'decel_rpm_s': 8, 'kp_ma_per_rpm': 10, 'ki_ma_per_rpm_s': 12, 'ff_ma_per_rpm_s': 14, 'watchdog_ms': 16, 'control_period_ms': 18, 'stall_time_ms': 20, 'gentle_current_ma': 22, 'normal_current_ma': 24, 'boost_current_ma': 26, 'boost_capacity_ms': 28, 'boost_refill_ms': 30, 'temp_poll_ms': 32, 'temp_boost_stale_ms': 34, 'temp_stop_stale_ms': 36, 'cooldown_ms': 38, 'cap_ramp_ma_s': 40, 'hold_current_ma': 42, 'hold_kp_ma_per_degree': 44, 'hold_ki_ma_per_degree_s': 46, 'hold_damping_ma_per_rpm': 48, 'neutral_settle_ms': 50, 'feedback_timeout_ms': 52, 'stall_target_centi_rpm': 54, 'stall_speed_centi_rpm': 56, 'stall_current_ma': 58, 'abnormal_current_ma': 60, 'abnormal_current_ms': 62, 'abnormal_margin_ma': 64, 'saturation_warn_ms': 66, 'stop_verify_ms': 68, 'temp_warn_c': 70, 'temp_derate_c': 71, 'temp_limit_c': 72, 'temp_release_c': 73, 'temp_hysteresis_c': 74, 'hold_enabled': 75, 'disarmed_hold_enabled': 76, 'stall_enabled': 77}
-CONFIG_SPEC = [{'name': 'max_rpm', 'type': 'H', 'default': 40, 'min': 1, 'max': 200}, {'name': 'max_current_ma', 'type': 'H', 'default': 1200, 'min': 1, 'max': 2700}, {'name': 'neutral_brake_ma', 'type': 'H', 'default': 300, 'min': 0, 'max': 2700}, {'name': 'accel_rpm_s', 'type': 'H', 'default': 120, 'min': 1, 'max': 5000}, {'name': 'decel_rpm_s', 'type': 'H', 'default': 180, 'min': 1, 'max': 5000}, {'name': 'kp_ma_per_rpm', 'type': 'H', 'default': 20, 'min': 0, 'max': 1000}, {'name': 'ki_ma_per_rpm_s', 'type': 'H', 'default': 4, 'min': 0, 'max': 1000}, {'name': 'ff_ma_per_rpm_s', 'type': 'H', 'default': 0, 'min': 0, 'max': 1000}, {'name': 'watchdog_ms', 'type': 'H', 'default': 300, 'min': 100, 'max': 1000}, {'name': 'control_period_ms', 'type': 'H', 'default': 15, 'min': 10, 'max': 100}, {'name': 'stall_time_ms', 'type': 'H', 'default': 1000, 'min': 100, 'max': 10000}, {'name': 'gentle_current_ma', 'type': 'H', 'default': 800, 'min': 1, 'max': 2700}, {'name': 'normal_current_ma', 'type': 'H', 'default': 1500, 'min': 1, 'max': 2700}, {'name': 'boost_current_ma', 'type': 'H', 'default': 2500, 'min': 1, 'max': 2700}, {'name': 'boost_capacity_ms', 'type': 'H', 'default': 20000, 'min': 1000, 'max': 60000}, {'name': 'boost_refill_ms', 'type': 'H', 'default': 60000, 'min': 1000, 'max': 65535}, {'name': 'temp_poll_ms', 'type': 'H', 'default': 500, 'min': 100, 'max': 1000}, {'name': 'temp_boost_stale_ms', 'type': 'H', 'default': 750, 'min': 100, 'max': 1500}, {'name': 'temp_stop_stale_ms', 'type': 'H', 'default': 1500, 'min': 200, 'max': 5000}, {'name': 'cooldown_ms', 'type': 'H', 'default': 3000, 'min': 100, 'max': 60000}, {'name': 'cap_ramp_ma_s', 'type': 'H', 'default': 1000, 'min': 1, 'max': 10000}, {'name': 'hold_current_ma', 'type': 'H', 'default': 300, 'min': 0, 'max': 2700}, {'name': 'hold_kp_ma_per_degree', 'type': 'H', 'default': 2, 'min': 0, 'max': 1000}, {'name': 'hold_ki_ma_per_degree_s', 'type': 'H', 'default': 1, 'min': 0, 'max': 1000}, {'name': 'hold_damping_ma_per_rpm', 'type': 'H', 'default': 20, 'min': 0, 'max': 1000}, {'name': 'neutral_settle_ms', 'type': 'H', 'default': 300, 'min': 50, 'max': 10000}, {'name': 'feedback_timeout_ms', 'type': 'H', 'default': 150, 'min': 50, 'max': 1000}, {'name': 'stall_target_centi_rpm', 'type': 'H', 'default': 800, 'min': 100, 'max': 20000}, {'name': 'stall_speed_centi_rpm', 'type': 'H', 'default': 200, 'min': 0, 'max': 20000}, {'name': 'stall_current_ma', 'type': 'H', 'default': 250, 'min': 0, 'max': 2700}, {'name': 'abnormal_current_ma', 'type': 'H', 'default': 2700, 'min': 1, 'max': 3000}, {'name': 'abnormal_current_ms', 'type': 'H', 'default': 200, 'min': 20, 'max': 5000}, {'name': 'abnormal_margin_ma', 'type': 'H', 'default': 400, 'min': 0, 'max': 1000}, {'name': 'saturation_warn_ms', 'type': 'H', 'default': 500, 'min': 50, 'max': 10000}, {'name': 'stop_verify_ms', 'type': 'H', 'default': 1500, 'min': 100, 'max': 10000}, {'name': 'temp_warn_c', 'type': 'B', 'default': 50, 'min': 20, 'max': 60}, {'name': 'temp_derate_c', 'type': 'B', 'default': 55, 'min': 30, 'max': 65}, {'name': 'temp_limit_c', 'type': 'B', 'default': 65, 'min': 40, 'max': 70}, {'name': 'temp_release_c', 'type': 'B', 'default': 45, 'min': 10, 'max': 60}, {'name': 'temp_hysteresis_c', 'type': 'B', 'default': 3, 'min': 1, 'max': 10}, {'name': 'hold_enabled', 'type': 'B', 'default': True, 'min': 0, 'max': 1}, {'name': 'disarmed_hold_enabled', 'type': 'B', 'default': False, 'min': 0, 'max': 1}, {'name': 'stall_enabled', 'type': 'B', 'default': True, 'min': 0, 'max': 1}]
-STATUS_HEADER_FIELDS = ('boot_id', 'host_session', 'capabilities', 'build_id', 'config_id', 'accepted_seq', 'applied_seq', 'accepted_ms', 'applied_ms', 'state', 'fault_code', 'stop_state', 'requested_profile', 'applied_profile', 'config_result', 'reason_flags', 'sweep_us', 'command_age_ms', 'boost_remaining_ms', 'boost_capacity_ms', 'boost_refill_remaining_ms', 'cooldown_remaining_ms', 'hold_flags', 'fault_wheel', 'hello_nonce')
-STATUS_HEADER_FORMAT = '<QQIIIHHIIBBBBBBIIHIIIIBBQ'
+CONFIG_OFFSETS = {'max_rpm': 0, 'max_current_ma': 2, 'neutral_brake_ma': 4, 'accel_rpm_s': 6, 'decel_rpm_s': 8, 'kp_ma_per_rpm': 10, 'ki_ma_per_rpm_s': 12, 'ff_ma_per_rpm_s': 14, 'watchdog_ms': 16, 'control_period_ms': 18, 'stall_time_ms': 20, 'gentle_current_ma': 22, 'normal_current_ma': 24, 'boost_current_ma': 26, 'boost_capacity_ms': 28, 'boost_refill_ms': 30, 'temp_poll_ms': 32, 'temp_boost_stale_ms': 34, 'temp_stop_stale_ms': 36, 'cooldown_ms': 38, 'cap_ramp_ma_s': 40, 'hold_current_ma': 42, 'hold_kp_ma_per_degree': 44, 'hold_ki_ma_per_degree_s': 46, 'hold_damping_ma_per_rpm': 48, 'neutral_settle_ms': 50, 'feedback_timeout_ms': 52, 'stall_target_centi_rpm': 54, 'stall_speed_centi_rpm': 56, 'stall_current_ma': 58, 'abnormal_current_ma': 60, 'abnormal_current_ms': 62, 'abnormal_margin_ma': 64, 'saturation_warn_ms': 66, 'stop_verify_ms': 68, 'temp_warn_c': 70, 'temp_derate_c': 71, 'temp_limit_c': 72, 'temp_release_c': 73, 'temp_hysteresis_c': 74, 'hold_enabled': 75, 'disarmed_hold_enabled': 76, 'stall_enabled': 77, 'hold_temp_c': 78, 'encoder_counts_per_rev': 79}
+CONFIG_SPEC = [{'name': 'max_rpm', 'type': 'H', 'default': 40, 'min': 1, 'max': 200}, {'name': 'max_current_ma', 'type': 'H', 'default': 2700, 'min': 1, 'max': 2700}, {'name': 'neutral_brake_ma', 'type': 'H', 'default': 300, 'min': 0, 'max': 2700}, {'name': 'accel_rpm_s', 'type': 'H', 'default': 120, 'min': 1, 'max': 5000}, {'name': 'decel_rpm_s', 'type': 'H', 'default': 180, 'min': 1, 'max': 5000}, {'name': 'kp_ma_per_rpm', 'type': 'H', 'default': 20, 'min': 0, 'max': 1000}, {'name': 'ki_ma_per_rpm_s', 'type': 'H', 'default': 4, 'min': 0, 'max': 1000}, {'name': 'ff_ma_per_rpm_s', 'type': 'H', 'default': 0, 'min': 0, 'max': 1000}, {'name': 'watchdog_ms', 'type': 'H', 'default': 300, 'min': 100, 'max': 1000}, {'name': 'control_period_ms', 'type': 'H', 'default': 15, 'min': 10, 'max': 100}, {'name': 'stall_time_ms', 'type': 'H', 'default': 1000, 'min': 100, 'max': 5000}, {'name': 'gentle_current_ma', 'type': 'H', 'default': 800, 'min': 1, 'max': 2700}, {'name': 'normal_current_ma', 'type': 'H', 'default': 1500, 'min': 1, 'max': 2700}, {'name': 'boost_current_ma', 'type': 'H', 'default': 2500, 'min': 1, 'max': 2700}, {'name': 'boost_capacity_ms', 'type': 'H', 'default': 20000, 'min': 1000, 'max': 20000}, {'name': 'boost_refill_ms', 'type': 'H', 'default': 60000, 'min': 60000, 'max': 65535}, {'name': 'temp_poll_ms', 'type': 'H', 'default': 500, 'min': 100, 'max': 500}, {'name': 'temp_boost_stale_ms', 'type': 'H', 'default': 750, 'min': 100, 'max': 750}, {'name': 'temp_stop_stale_ms', 'type': 'H', 'default': 1500, 'min': 200, 'max': 1500}, {'name': 'cooldown_ms', 'type': 'H', 'default': 3000, 'min': 1000, 'max': 60000}, {'name': 'cap_ramp_ma_s', 'type': 'H', 'default': 1000, 'min': 1, 'max': 10000}, {'name': 'hold_current_ma', 'type': 'H', 'default': 300, 'min': 0, 'max': 2700}, {'name': 'hold_kp_ma_per_degree', 'type': 'H', 'default': 2, 'min': 0, 'max': 1000}, {'name': 'hold_ki_ma_per_degree_s', 'type': 'H', 'default': 1, 'min': 0, 'max': 1000}, {'name': 'hold_damping_ma_per_rpm', 'type': 'H', 'default': 20, 'min': 0, 'max': 1000}, {'name': 'neutral_settle_ms', 'type': 'H', 'default': 300, 'min': 100, 'max': 5000}, {'name': 'feedback_timeout_ms', 'type': 'H', 'default': 150, 'min': 100, 'max': 250}, {'name': 'stall_target_centi_rpm', 'type': 'H', 'default': 800, 'min': 100, 'max': 20000}, {'name': 'stall_speed_centi_rpm', 'type': 'H', 'default': 200, 'min': 0, 'max': 20000}, {'name': 'stall_current_ma', 'type': 'H', 'default': 250, 'min': 1, 'max': 2700}, {'name': 'abnormal_current_ma', 'type': 'H', 'default': 2700, 'min': 1, 'max': 2700}, {'name': 'abnormal_current_ms', 'type': 'H', 'default': 200, 'min': 50, 'max': 2000}, {'name': 'abnormal_margin_ma', 'type': 'H', 'default': 400, 'min': 0, 'max': 1000}, {'name': 'saturation_warn_ms', 'type': 'H', 'default': 500, 'min': 100, 'max': 5000}, {'name': 'stop_verify_ms', 'type': 'H', 'default': 1500, 'min': 100, 'max': 5000}, {'name': 'temp_warn_c', 'type': 'B', 'default': 50, 'min': 30, 'max': 60}, {'name': 'temp_derate_c', 'type': 'B', 'default': 55, 'min': 30, 'max': 65}, {'name': 'temp_limit_c', 'type': 'B', 'default': 65, 'min': 40, 'max': 70}, {'name': 'temp_release_c', 'type': 'B', 'default': 45, 'min': 20, 'max': 60}, {'name': 'temp_hysteresis_c', 'type': 'B', 'default': 3, 'min': 1, 'max': 10}, {'name': 'hold_enabled', 'type': 'B', 'default': True, 'min': 0, 'max': 1}, {'name': 'disarmed_hold_enabled', 'type': 'B', 'default': False, 'min': 0, 'max': 1}, {'name': 'stall_enabled', 'type': 'B', 'default': True, 'min': 0, 'max': 1}, {'name': 'hold_temp_c', 'type': 'B', 'default': 55, 'min': 30, 'max': 65}, {'name': 'encoder_counts_per_rev', 'type': 'I', 'default': 65536, 'min': 256, 'max': 65536}]
+STATUS_HEADER_FIELDS = ('boot_id', 'host_session', 'capabilities', 'build_id', 'config_id', 'accepted_seq', 'applied_seq', 'accepted_ms', 'applied_ms', 'state', 'fault_code', 'stop_state', 'requested_profile', 'applied_profile', 'config_result', 'reason_flags', 'sweep_us', 'command_age_ms', 'boost_remaining_ms', 'boost_capacity_ms', 'boost_refill_remaining_ms', 'cooldown_remaining_ms', 'hold_flags', 'fault_wheel', 'hello_nonce', 'config_ack_seq')
+STATUS_HEADER_FORMAT = '<QQIIIHHIIBBBBBBIIHIIIIBBQH'
 STATUS_HEADER_STRUCT = struct.Struct(STATUS_HEADER_FORMAT)
-STATUS_HEADER_OFFSETS = {'boot_id': 0, 'host_session': 8, 'capabilities': 16, 'build_id': 20, 'config_id': 24, 'accepted_seq': 28, 'applied_seq': 30, 'accepted_ms': 32, 'applied_ms': 36, 'state': 40, 'fault_code': 41, 'stop_state': 42, 'requested_profile': 43, 'applied_profile': 44, 'config_result': 45, 'reason_flags': 46, 'sweep_us': 50, 'command_age_ms': 54, 'boost_remaining_ms': 56, 'boost_capacity_ms': 60, 'boost_refill_remaining_ms': 64, 'cooldown_remaining_ms': 68, 'hold_flags': 72, 'fault_wheel': 73, 'hello_nonce': 74}
+STATUS_HEADER_OFFSETS = {'boot_id': 0, 'host_session': 8, 'capabilities': 16, 'build_id': 20, 'config_id': 24, 'accepted_seq': 28, 'applied_seq': 30, 'accepted_ms': 32, 'applied_ms': 36, 'state': 40, 'fault_code': 41, 'stop_state': 42, 'requested_profile': 43, 'applied_profile': 44, 'config_result': 45, 'reason_flags': 46, 'sweep_us': 50, 'command_age_ms': 54, 'boost_remaining_ms': 56, 'boost_capacity_ms': 60, 'boost_refill_remaining_ms': 64, 'cooldown_remaining_ms': 68, 'hold_flags': 72, 'fault_wheel': 73, 'hello_nonce': 74, 'config_ack_seq': 82}
 WHEEL_FIELDS = ('target_centi_rpm', 'rpm', 'current_ma', 'position_raw', 'temp_c', 'effective_cap_ma', 'hold_cap_ma', 'age_ms', 'temp_age_ms', 'error', 'mode', 'validity', 'reason_flags')
 WHEEL_FORMAT = '<hhhHhHHHHBBBI'
 WHEEL_STRUCT = struct.Struct(WHEEL_FORMAT)
 WHEEL_OFFSETS = {'target_centi_rpm': 0, 'rpm': 2, 'current_ma': 4, 'position_raw': 6, 'temp_c': 8, 'effective_cap_ma': 10, 'hold_cap_ma': 12, 'age_ms': 14, 'temp_age_ms': 16, 'error': 18, 'mode': 19, 'validity': 20, 'reason_flags': 21}
+
+def validate_config(values):
+    """Validate complete fields against the shared firmware contract."""
+    max_rpm = values['max_rpm']
+    if isinstance(max_rpm, bool) or not isinstance(max_rpm, int):
+        raise ValueError('max_rpm must be an integer')
+    if not 1 <= max_rpm <= 200:
+        raise ValueError("max_rpm must be within 1..200")
+    max_current_ma = values['max_current_ma']
+    if isinstance(max_current_ma, bool) or not isinstance(max_current_ma, int):
+        raise ValueError('max_current_ma must be an integer')
+    if not 1 <= max_current_ma <= 2700:
+        raise ValueError("max_current_ma must be within 1..2700")
+    neutral_brake_ma = values['neutral_brake_ma']
+    if isinstance(neutral_brake_ma, bool) or not isinstance(neutral_brake_ma, int):
+        raise ValueError('neutral_brake_ma must be an integer')
+    if not 0 <= neutral_brake_ma <= 2700:
+        raise ValueError("neutral_brake_ma must be within 0..2700")
+    accel_rpm_s = values['accel_rpm_s']
+    if isinstance(accel_rpm_s, bool) or not isinstance(accel_rpm_s, int):
+        raise ValueError('accel_rpm_s must be an integer')
+    if not 1 <= accel_rpm_s <= 5000:
+        raise ValueError("accel_rpm_s must be within 1..5000")
+    decel_rpm_s = values['decel_rpm_s']
+    if isinstance(decel_rpm_s, bool) or not isinstance(decel_rpm_s, int):
+        raise ValueError('decel_rpm_s must be an integer')
+    if not 1 <= decel_rpm_s <= 5000:
+        raise ValueError("decel_rpm_s must be within 1..5000")
+    kp_ma_per_rpm = values['kp_ma_per_rpm']
+    if isinstance(kp_ma_per_rpm, bool) or not isinstance(kp_ma_per_rpm, int):
+        raise ValueError('kp_ma_per_rpm must be an integer')
+    if not 0 <= kp_ma_per_rpm <= 1000:
+        raise ValueError("kp_ma_per_rpm must be within 0..1000")
+    ki_ma_per_rpm_s = values['ki_ma_per_rpm_s']
+    if isinstance(ki_ma_per_rpm_s, bool) or not isinstance(ki_ma_per_rpm_s, int):
+        raise ValueError('ki_ma_per_rpm_s must be an integer')
+    if not 0 <= ki_ma_per_rpm_s <= 1000:
+        raise ValueError("ki_ma_per_rpm_s must be within 0..1000")
+    ff_ma_per_rpm_s = values['ff_ma_per_rpm_s']
+    if isinstance(ff_ma_per_rpm_s, bool) or not isinstance(ff_ma_per_rpm_s, int):
+        raise ValueError('ff_ma_per_rpm_s must be an integer')
+    if not 0 <= ff_ma_per_rpm_s <= 1000:
+        raise ValueError("ff_ma_per_rpm_s must be within 0..1000")
+    watchdog_ms = values['watchdog_ms']
+    if isinstance(watchdog_ms, bool) or not isinstance(watchdog_ms, int):
+        raise ValueError('watchdog_ms must be an integer')
+    if not 100 <= watchdog_ms <= 1000:
+        raise ValueError("watchdog_ms must be within 100..1000")
+    control_period_ms = values['control_period_ms']
+    if isinstance(control_period_ms, bool) or not isinstance(control_period_ms, int):
+        raise ValueError('control_period_ms must be an integer')
+    if not 10 <= control_period_ms <= 100:
+        raise ValueError("control_period_ms must be within 10..100")
+    stall_time_ms = values['stall_time_ms']
+    if isinstance(stall_time_ms, bool) or not isinstance(stall_time_ms, int):
+        raise ValueError('stall_time_ms must be an integer')
+    if not 100 <= stall_time_ms <= 5000:
+        raise ValueError("stall_time_ms must be within 100..5000")
+    gentle_current_ma = values['gentle_current_ma']
+    if isinstance(gentle_current_ma, bool) or not isinstance(gentle_current_ma, int):
+        raise ValueError('gentle_current_ma must be an integer')
+    if not 1 <= gentle_current_ma <= 2700:
+        raise ValueError("gentle_current_ma must be within 1..2700")
+    normal_current_ma = values['normal_current_ma']
+    if isinstance(normal_current_ma, bool) or not isinstance(normal_current_ma, int):
+        raise ValueError('normal_current_ma must be an integer')
+    if not 1 <= normal_current_ma <= 2700:
+        raise ValueError("normal_current_ma must be within 1..2700")
+    boost_current_ma = values['boost_current_ma']
+    if isinstance(boost_current_ma, bool) or not isinstance(boost_current_ma, int):
+        raise ValueError('boost_current_ma must be an integer')
+    if not 1 <= boost_current_ma <= 2700:
+        raise ValueError("boost_current_ma must be within 1..2700")
+    boost_capacity_ms = values['boost_capacity_ms']
+    if isinstance(boost_capacity_ms, bool) or not isinstance(boost_capacity_ms, int):
+        raise ValueError('boost_capacity_ms must be an integer')
+    if not 1000 <= boost_capacity_ms <= 20000:
+        raise ValueError("boost_capacity_ms must be within 1000..20000")
+    boost_refill_ms = values['boost_refill_ms']
+    if isinstance(boost_refill_ms, bool) or not isinstance(boost_refill_ms, int):
+        raise ValueError('boost_refill_ms must be an integer')
+    if not 60000 <= boost_refill_ms <= 65535:
+        raise ValueError("boost_refill_ms must be within 60000..65535")
+    temp_poll_ms = values['temp_poll_ms']
+    if isinstance(temp_poll_ms, bool) or not isinstance(temp_poll_ms, int):
+        raise ValueError('temp_poll_ms must be an integer')
+    if not 100 <= temp_poll_ms <= 500:
+        raise ValueError("temp_poll_ms must be within 100..500")
+    temp_boost_stale_ms = values['temp_boost_stale_ms']
+    if isinstance(temp_boost_stale_ms, bool) or not isinstance(temp_boost_stale_ms, int):
+        raise ValueError('temp_boost_stale_ms must be an integer')
+    if not 100 <= temp_boost_stale_ms <= 750:
+        raise ValueError("temp_boost_stale_ms must be within 100..750")
+    temp_stop_stale_ms = values['temp_stop_stale_ms']
+    if isinstance(temp_stop_stale_ms, bool) or not isinstance(temp_stop_stale_ms, int):
+        raise ValueError('temp_stop_stale_ms must be an integer')
+    if not 200 <= temp_stop_stale_ms <= 1500:
+        raise ValueError("temp_stop_stale_ms must be within 200..1500")
+    cooldown_ms = values['cooldown_ms']
+    if isinstance(cooldown_ms, bool) or not isinstance(cooldown_ms, int):
+        raise ValueError('cooldown_ms must be an integer')
+    if not 1000 <= cooldown_ms <= 60000:
+        raise ValueError("cooldown_ms must be within 1000..60000")
+    cap_ramp_ma_s = values['cap_ramp_ma_s']
+    if isinstance(cap_ramp_ma_s, bool) or not isinstance(cap_ramp_ma_s, int):
+        raise ValueError('cap_ramp_ma_s must be an integer')
+    if not 1 <= cap_ramp_ma_s <= 10000:
+        raise ValueError("cap_ramp_ma_s must be within 1..10000")
+    hold_current_ma = values['hold_current_ma']
+    if isinstance(hold_current_ma, bool) or not isinstance(hold_current_ma, int):
+        raise ValueError('hold_current_ma must be an integer')
+    if not 0 <= hold_current_ma <= 2700:
+        raise ValueError("hold_current_ma must be within 0..2700")
+    hold_kp_ma_per_degree = values['hold_kp_ma_per_degree']
+    if isinstance(hold_kp_ma_per_degree, bool) or not isinstance(hold_kp_ma_per_degree, int):
+        raise ValueError('hold_kp_ma_per_degree must be an integer')
+    if not 0 <= hold_kp_ma_per_degree <= 1000:
+        raise ValueError("hold_kp_ma_per_degree must be within 0..1000")
+    hold_ki_ma_per_degree_s = values['hold_ki_ma_per_degree_s']
+    if isinstance(hold_ki_ma_per_degree_s, bool) or not isinstance(hold_ki_ma_per_degree_s, int):
+        raise ValueError('hold_ki_ma_per_degree_s must be an integer')
+    if not 0 <= hold_ki_ma_per_degree_s <= 1000:
+        raise ValueError("hold_ki_ma_per_degree_s must be within 0..1000")
+    hold_damping_ma_per_rpm = values['hold_damping_ma_per_rpm']
+    if isinstance(hold_damping_ma_per_rpm, bool) or not isinstance(hold_damping_ma_per_rpm, int):
+        raise ValueError('hold_damping_ma_per_rpm must be an integer')
+    if not 0 <= hold_damping_ma_per_rpm <= 1000:
+        raise ValueError("hold_damping_ma_per_rpm must be within 0..1000")
+    neutral_settle_ms = values['neutral_settle_ms']
+    if isinstance(neutral_settle_ms, bool) or not isinstance(neutral_settle_ms, int):
+        raise ValueError('neutral_settle_ms must be an integer')
+    if not 100 <= neutral_settle_ms <= 5000:
+        raise ValueError("neutral_settle_ms must be within 100..5000")
+    feedback_timeout_ms = values['feedback_timeout_ms']
+    if isinstance(feedback_timeout_ms, bool) or not isinstance(feedback_timeout_ms, int):
+        raise ValueError('feedback_timeout_ms must be an integer')
+    if not 100 <= feedback_timeout_ms <= 250:
+        raise ValueError("feedback_timeout_ms must be within 100..250")
+    stall_target_centi_rpm = values['stall_target_centi_rpm']
+    if isinstance(stall_target_centi_rpm, bool) or not isinstance(stall_target_centi_rpm, int):
+        raise ValueError('stall_target_centi_rpm must be an integer')
+    if not 100 <= stall_target_centi_rpm <= 20000:
+        raise ValueError("stall_target_centi_rpm must be within 100..20000")
+    stall_speed_centi_rpm = values['stall_speed_centi_rpm']
+    if isinstance(stall_speed_centi_rpm, bool) or not isinstance(stall_speed_centi_rpm, int):
+        raise ValueError('stall_speed_centi_rpm must be an integer')
+    if not 0 <= stall_speed_centi_rpm <= 20000:
+        raise ValueError("stall_speed_centi_rpm must be within 0..20000")
+    stall_current_ma = values['stall_current_ma']
+    if isinstance(stall_current_ma, bool) or not isinstance(stall_current_ma, int):
+        raise ValueError('stall_current_ma must be an integer')
+    if not 1 <= stall_current_ma <= 2700:
+        raise ValueError("stall_current_ma must be within 1..2700")
+    abnormal_current_ma = values['abnormal_current_ma']
+    if isinstance(abnormal_current_ma, bool) or not isinstance(abnormal_current_ma, int):
+        raise ValueError('abnormal_current_ma must be an integer')
+    if not 1 <= abnormal_current_ma <= 2700:
+        raise ValueError("abnormal_current_ma must be within 1..2700")
+    abnormal_current_ms = values['abnormal_current_ms']
+    if isinstance(abnormal_current_ms, bool) or not isinstance(abnormal_current_ms, int):
+        raise ValueError('abnormal_current_ms must be an integer')
+    if not 50 <= abnormal_current_ms <= 2000:
+        raise ValueError("abnormal_current_ms must be within 50..2000")
+    abnormal_margin_ma = values['abnormal_margin_ma']
+    if isinstance(abnormal_margin_ma, bool) or not isinstance(abnormal_margin_ma, int):
+        raise ValueError('abnormal_margin_ma must be an integer')
+    if not 0 <= abnormal_margin_ma <= 1000:
+        raise ValueError("abnormal_margin_ma must be within 0..1000")
+    saturation_warn_ms = values['saturation_warn_ms']
+    if isinstance(saturation_warn_ms, bool) or not isinstance(saturation_warn_ms, int):
+        raise ValueError('saturation_warn_ms must be an integer')
+    if not 100 <= saturation_warn_ms <= 5000:
+        raise ValueError("saturation_warn_ms must be within 100..5000")
+    stop_verify_ms = values['stop_verify_ms']
+    if isinstance(stop_verify_ms, bool) or not isinstance(stop_verify_ms, int):
+        raise ValueError('stop_verify_ms must be an integer')
+    if not 100 <= stop_verify_ms <= 5000:
+        raise ValueError("stop_verify_ms must be within 100..5000")
+    temp_warn_c = values['temp_warn_c']
+    if isinstance(temp_warn_c, bool) or not isinstance(temp_warn_c, int):
+        raise ValueError('temp_warn_c must be an integer')
+    if not 30 <= temp_warn_c <= 60:
+        raise ValueError("temp_warn_c must be within 30..60")
+    temp_derate_c = values['temp_derate_c']
+    if isinstance(temp_derate_c, bool) or not isinstance(temp_derate_c, int):
+        raise ValueError('temp_derate_c must be an integer')
+    if not 30 <= temp_derate_c <= 65:
+        raise ValueError("temp_derate_c must be within 30..65")
+    temp_limit_c = values['temp_limit_c']
+    if isinstance(temp_limit_c, bool) or not isinstance(temp_limit_c, int):
+        raise ValueError('temp_limit_c must be an integer')
+    if not 40 <= temp_limit_c <= 70:
+        raise ValueError("temp_limit_c must be within 40..70")
+    temp_release_c = values['temp_release_c']
+    if isinstance(temp_release_c, bool) or not isinstance(temp_release_c, int):
+        raise ValueError('temp_release_c must be an integer')
+    if not 20 <= temp_release_c <= 60:
+        raise ValueError("temp_release_c must be within 20..60")
+    temp_hysteresis_c = values['temp_hysteresis_c']
+    if isinstance(temp_hysteresis_c, bool) or not isinstance(temp_hysteresis_c, int):
+        raise ValueError('temp_hysteresis_c must be an integer')
+    if not 1 <= temp_hysteresis_c <= 10:
+        raise ValueError("temp_hysteresis_c must be within 1..10")
+    hold_enabled = values['hold_enabled']
+    if not isinstance(hold_enabled, bool):
+        raise ValueError('hold_enabled must be a boolean')
+    if not 0 <= hold_enabled <= 1:
+        raise ValueError("hold_enabled must be within 0..1")
+    disarmed_hold_enabled = values['disarmed_hold_enabled']
+    if not isinstance(disarmed_hold_enabled, bool):
+        raise ValueError('disarmed_hold_enabled must be a boolean')
+    if not 0 <= disarmed_hold_enabled <= 1:
+        raise ValueError("disarmed_hold_enabled must be within 0..1")
+    stall_enabled = values['stall_enabled']
+    if not isinstance(stall_enabled, bool):
+        raise ValueError('stall_enabled must be a boolean')
+    if not 0 <= stall_enabled <= 1:
+        raise ValueError("stall_enabled must be within 0..1")
+    hold_temp_c = values['hold_temp_c']
+    if isinstance(hold_temp_c, bool) or not isinstance(hold_temp_c, int):
+        raise ValueError('hold_temp_c must be an integer')
+    if not 30 <= hold_temp_c <= 65:
+        raise ValueError("hold_temp_c must be within 30..65")
+    encoder_counts_per_rev = values['encoder_counts_per_rev']
+    if isinstance(encoder_counts_per_rev, bool) or not isinstance(encoder_counts_per_rev, int):
+        raise ValueError('encoder_counts_per_rev must be an integer')
+    if not 256 <= encoder_counts_per_rev <= 65536:
+        raise ValueError("encoder_counts_per_rev must be within 256..65536")
+    if not (gentle_current_ma <= normal_current_ma <= boost_current_ma):
+        raise ValueError('Profile current caps must be Gentle <= Normal <= Boost')
+    if not (neutral_brake_ma <= max_current_ma and hold_current_ma <= max_current_ma):
+        raise ValueError('Braking and holding caps cannot exceed the independent current ceiling')
+    if not (temp_release_c < temp_warn_c < temp_derate_c < temp_limit_c):
+        raise ValueError('Temperature thresholds must be release < warn < derate < stop')
+    if not (temp_release_c + temp_hysteresis_c < temp_derate_c):
+        raise ValueError('Thermal release hysteresis must remain below derating')
+    if not (temp_poll_ms < temp_boost_stale_ms < temp_stop_stale_ms):
+        raise ValueError('Temperature timing must be poll < Boost stale < stop stale')
+    if not (boost_refill_ms >= boost_capacity_ms):
+        raise ValueError('Boost refill time must be at least its capacity duration')
+    if not (stall_speed_centi_rpm < stall_target_centi_rpm):
+        raise ValueError('Stall measured speed threshold must be below its target threshold')
+    if not (control_period_ms < feedback_timeout_ms < watchdog_ms):
+        raise ValueError('Timing must be control period < feedback timeout < command watchdog')
+    if not (not disarmed_hold_enabled or hold_enabled):
+        raise ValueError('Disarmed holding requires holding to be enabled')
+    if not (temp_release_c < hold_temp_c <= temp_limit_c):
+        raise ValueError('Holding thermal limit must be above release and at or below stop')
+
 SESSION_STRUCT = struct.Struct('<QQ')
 CONFIG_PREFIX = struct.Struct('<QQI')
 ARM_STRUCT = CONFIG_PREFIX

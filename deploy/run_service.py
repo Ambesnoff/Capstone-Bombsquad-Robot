@@ -40,6 +40,10 @@ def main(argv: list[str] | None = None) -> int:
             sys.executable, str(Path(__file__).resolve().parents[1] / "robot_main.py"),
             "run", "--config", str(args.config), "--telemetry", str(args.telemetry),
         ])
+        # A signal can arrive while process creation is pending, before the
+        # handler can see this child. Preserve shutdown precedence afterward.
+        if stop.is_set() and child.poll() is None:
+            child.terminate()
         result = child.wait()
         if stop.is_set() or result == 0:
             return 0

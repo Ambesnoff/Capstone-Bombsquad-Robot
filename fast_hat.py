@@ -20,7 +20,7 @@ from typing import Any, Mapping, Sequence
 from protocol_defs import (
     SYNC, VERSION, MAX_PAYLOAD, STATUS_LENGTH, FIRMWARE_MAX_CURRENT_MA,
     FrameType, HatState, Profile, StopState, ConfigResult, Reason, Capability,
-    Validity, HoldFlag, CONFIG_FIELDS, CONFIG_SPEC, CONFIG_STRUCT,
+    Validity, HoldFlag, FaultCode, CONFIG_FIELDS, CONFIG_SPEC, CONFIG_STRUCT, validate_config,
     STATUS_HEADER_FIELDS, STATUS_HEADER_STRUCT, WHEEL_FIELDS, WHEEL_STRUCT,
     CONFIG_PREFIX, ARM_STRUCT, TARGETS_STRUCT,
 )
@@ -185,6 +185,7 @@ class FastStatus:
     hold_flags: HoldFlag = HoldFlag(0)
     fault_wheel: int = 0
     hello_nonce: int = 0
+    config_ack_seq: int = 0
 
     @property
     def accepted_seq(self) -> int:
@@ -221,7 +222,7 @@ def decode_status(payload: bytes, received_at: float | None = None) -> FastStatu
                         ("config_result", ConfigResult), ("reason_flags", Reason),
                         ("capabilities", Capability), ("hold_flags", HoldFlag)):
         values[field] = enum(values[field])
-    if values["fault_wheel"] > 4 or values["fault_code"] > 9:
+    if values["fault_wheel"] > 4 or values["fault_code"] not in FaultCode:
         raise ValueError("Invalid fault identity in STATUS")
     if values["boost_remaining_ms"] > values["boost_capacity_ms"]:
         raise ValueError("Invalid Boost budget in STATUS")
@@ -259,9 +260,9 @@ def _uint16(value: int, name: str) -> int:
 
 @dataclass(frozen=True)
 class FastConfig:
-    # Candidate profiles may exceed this independent, conservatively loaded ceiling.
+    # Profiles are bounded by the independently enforced firmware ceiling.
     max_rpm: int = 40
-    max_current_ma: int = 1200
+    max_current_ma: int = 2700
     neutral_brake_ma: int = 300
     accel_rpm_s: int = 120
     decel_rpm_s: int = 180
@@ -303,36 +304,11 @@ class FastConfig:
     hold_enabled: bool = True
     disarmed_hold_enabled: bool = False
     stall_enabled: bool = True
+    hold_temp_c: int = 55
+    encoder_counts_per_rev: int = 65536
 
     def payload(self) -> bytes:
-        for field in CONFIG_SPEC:
-            name = field["name"]
-            value = getattr(self, name)
-            if isinstance(field["default"], bool):
-                if not isinstance(value, bool):
-                    raise ValueError(f"{name} must be a boolean")
-            elif isinstance(value, bool) or not isinstance(value, int):
-                raise ValueError(f"{name} must be an integer")
-            if not field["min"] <= value <= field["max"]:
-                raise ValueError(f"{name} must be within {field['min']}..{field['max']}")
-        if not self.gentle_current_ma <= self.normal_current_ma <= self.boost_current_ma:
-            raise ValueError("Profile current caps must be Gentle <= Normal <= Boost")
-        if self.neutral_brake_ma > self.max_current_ma or self.hold_current_ma > self.max_current_ma:
-            raise ValueError("Braking and holding caps cannot exceed the independent current ceiling")
-        if not self.temp_release_c < self.temp_warn_c < self.temp_derate_c < self.temp_limit_c:
-            raise ValueError("Temperature thresholds must be release < warn < derate < stop")
-        if self.temp_release_c + self.temp_hysteresis_c >= self.temp_derate_c:
-            raise ValueError("Thermal release hysteresis must remain below derating")
-        if not self.temp_poll_ms < self.temp_boost_stale_ms < self.temp_stop_stale_ms:
-            raise ValueError("Temperature timing must be poll < Boost stale < stop stale")
-        if self.boost_refill_ms < self.boost_capacity_ms:
-            raise ValueError("Boost refill time must be at least its capacity duration")
-        if self.stall_speed_centi_rpm >= self.stall_target_centi_rpm:
-            raise ValueError("Stall measured speed threshold must be below its target threshold")
-        if self.control_period_ms >= self.feedback_timeout_ms or self.feedback_timeout_ms >= self.watchdog_ms:
-            raise ValueError("Timing must be control period < feedback timeout < command watchdog")
-        if self.disarmed_hold_enabled and not self.hold_enabled:
-            raise ValueError("Disarmed holding requires holding to be enabled")
+        validate_config({name: getattr(self, name) for name in CONFIG_FIELDS})
         return CONFIG_STRUCT.pack(*(getattr(self, name) for name in CONFIG_FIELDS))
 
     @property
@@ -685,7 +661,7 @@ class FastHat:
                     if status.fault_code and kind not in (FrameType.STOP, FrameType.HELLO):
                         self._stop_flag.set()
                         raise FastHatError(f"HAT fault {status.fault_code} while waiting for {kind.name}")
-                    if status.ack_seq == sequence:
+                    if status.ack_seq == sequence or (kind == FrameType.CONFIG and status.config_ack_seq == sequence):
                         if kind in (FrameType.ARM, FrameType.TARGETS) and not status.motion_enabled:
                             self._stop_flag.set()
                             raise FastHatError(f"HAT ACKed {kind.name} without entering ARMED state")
@@ -696,8 +672,11 @@ class FastHat:
                                 raise FastHatError("HAT is missing required protocol v2 capabilities")
                         if kind == FrameType.CONFIG:
                             config = self._sent_config[sequence]
-                            if (status.motion_enabled or not status.stop_confirmed
-                                    or status.config_result != ConfigResult.APPLIED
+                            if status.config_result != ConfigResult.APPLIED:
+                                self._stop_flag.set()
+                                raise FastHatError(f"HAT rejected CONFIG ({status.config_result.name})")
+                            if (status.config_ack_seq != sequence or status.motion_enabled or not status.stop_confirmed
+                                    or status.applied_seq != sequence
                                     or status.config_id != config.configuration_id):
                                 self._stop_flag.set()
                                 raise FastHatError("HAT did not apply the exact stopped CONFIG")
@@ -707,6 +686,9 @@ class FastHat:
                             self._stop_flag.set()
                             raise FastHatError(f"HAT ACKed {kind.name} while still ARMED")
                         if kind == FrameType.ARM:
+                            if status.applied_seq != sequence:
+                                self._stop_flag.set()
+                                raise FastHatError("HAT ARM acknowledgment does not confirm application")
                             self._stop_flag.clear()
                         return status
                 remaining = deadline - time.monotonic()

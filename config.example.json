@@ -29,13 +29,13 @@
   "channels": {
     "throttle": 3,
     "steering": 1,
-    "arm": 8,
-    "reverse": 6,
+    "arm": 5,
+    "reverse": 8,
     "stop": 7,
-    "profile": 5
+    "profile": 6
   },
   "max_rpm": 40,
-  "max_current_a": 1.2,
+  "max_current_a": 2.7,
   "neutral_braking_current_a": 0.3,
   "acceleration_rpm_s": 120,
   "deceleration_rpm_s": 180,
@@ -57,7 +57,7 @@
     "gentle_a": 0.8,
     "normal_a": 1.5,
     "boost_a": 2.5,
-    "independent_ceiling_a": 1.2,
+    "independent_ceiling_a": 2.7,
     "boost_capacity_s": 20.0,
     "boost_refill_s": 60.0,
     "cap_ramp_a_s": 1.0,
@@ -101,7 +101,8 @@
     "abnormal_current_ms": 200,
     "abnormal_margin_a": 0.4,
     "saturation_warn_ms": 500,
-    "stop_verify_ms": 1500
+    "stop_verify_ms": 1500,
+    "encoder_counts_per_rev": 65536
   },
   "radio_telemetry_enabled": false,
   "radio_telemetry_hz": 2.0,

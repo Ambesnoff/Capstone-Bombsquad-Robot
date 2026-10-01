@@ -12,3 +12,5 @@ sources/
 *.map
 *.csv
 commissioning/runs/
+
+build/

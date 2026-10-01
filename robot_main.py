@@ -167,7 +167,8 @@ class ArmingGate:
             self.arm_was_high = True
             if rising_edge and self.saw_arm_low:
                 self.saw_arm_low = False
-                if drive_request(snapshot, self.settings).throttle == 0:
+                request = drive_request(snapshot, self.settings)
+                if request.throttle == 0 and request.steering == 0:
                     self.armed = True
                     return "newly_armed"
         return "waiting_for_neutral_or_arm_cycle"
@@ -280,7 +281,7 @@ class Robot:
     def prepare_current_mode(self) -> None:
         assert self.hat is not None
         for wheel in self.settings.wheels:
-            self._verify_still_armed()
+            self._verify_still_armed(require_neutral=True)
             feedback = self.hat.set_mode(wheel.motor_id, Mode.CURRENT)
             self._check_feedback(feedback)
             if feedback.mode != Mode.CURRENT:
@@ -306,7 +307,7 @@ class Robot:
         finally:
             hat.close()
 
-    def _verify_still_armed(self) -> None:
+    def _verify_still_armed(self, *, require_neutral: bool = False) -> None:
         if self._shutdown.is_set() or not self._running:
             raise ShutdownRequested("Shutdown requested")
         snapshot = self.radio.snapshot()
@@ -316,6 +317,10 @@ class Robot:
         assigned = self.settings.channels
         if channel(snapshot, assigned.arm) <= 0.5 or channel(snapshot, assigned.stop) > 0.5:
             raise RadioLost("Arm switch released or stop switch requested")
+        if require_neutral:
+            request = drive_request(snapshot, self.settings)
+            if request.throttle != 0 or request.steering != 0:
+                raise RadioLost("Throttle or steering changed during arming; neutral and fresh arm cycle required")
 
     def drive(self, request: DriveRequest) -> None:
         assert self.hat is not None
@@ -369,9 +374,9 @@ class Robot:
                     try:
                         if self.hat is None:
                             self.open_hat()
-                        self._verify_still_armed()
+                        self._verify_still_armed(require_neutral=True)
                         self.prepare_current_mode()
-                        self._verify_still_armed()
+                        self._verify_still_armed(require_neutral=True)
                         LOG.info("Armed")
                     except (RadioLost, ShutdownRequested):
                         self.gate.invalidate()
@@ -409,7 +414,7 @@ def monitor_radio(settings: Settings) -> None:
     with CRSFReader(settings.radio_port, baudrate=settings.radio_baud) as radio:
         LOG.info("Listening to receiver; no motor connection will be opened")
         if settings.motor_backend == "fast":
-            LOG.warning("Verify CH5 raw low/center/high. ELRS v3 requires Full 16chRate/2; Hybrid/Wide transmits CH5 as one bit.")
+            LOG.warning("Verify physical SB changes the configured profile channel through three distinct raw ranges. Example: SB CH6; SA arm CH5; SC reverse CH8; SD stop CH7. Confirm these EdgeTX mappings on your radio.")
         while True:
             snapshot = radio.snapshot()
             now = time.monotonic()
@@ -420,8 +425,8 @@ def monitor_radio(settings: Settings) -> None:
                     name: round(channel(snapshot, number), 2)
                     for name, number in vars(settings.channels).items() if number is not None
                 }
-                LOG.info("healthy=%s LQ=%s channels=%s", radio_healthy(snapshot, now, settings),
-                         snapshot.link_quality, mapped)
+                LOG.info("healthy=%s LQ=%s controls=%s raw_CH1_to_CH16=%s", radio_healthy(snapshot, now, settings),
+                         snapshot.link_quality, mapped, snapshot.channels)
             time.sleep(0.5)
 
 

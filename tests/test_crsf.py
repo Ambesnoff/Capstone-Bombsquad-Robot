@@ -210,3 +210,46 @@ class CRSFTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CRSFTransmitTests(unittest.TestCase):
+    def test_rpm_temperature_and_text_golden_units(self):
+        from crsf import encode_rpm_telemetry, encode_temperature_telemetry, encode_flight_mode
+        frames = (encode_rpm_telemetry((40,-40)),encode_temperature_telemetry((25,-5),source=1),encode_flight_mode("HOLDING G>N B8s"))
+        rpm,temp,text = [CRSFParser().feed(f)[0] for f in frames]
+        self.assertEqual(rpm.frame_type,0x0C);self.assertEqual(rpm.payload,b"\x00\x00\x00\x28\xff\xff\xd8")
+        self.assertEqual(temp.frame_type,0x0D);self.assertEqual(temp.payload,b"\x01\x00\xfa\xff\xce")
+        self.assertEqual(text.frame_type,0x21);self.assertTrue(text.payload.endswith(b"\x00"))
+        self.assertTrue(all(len(f)<=64 for f in frames))
+
+    def test_encoder_rejects_invalid_units_and_bounds(self):
+        from crsf import encode_telemetry, encode_rpm_telemetry, encode_temperature_telemetry, encode_flight_mode
+        with self.assertRaises(ValueError): encode_telemetry(0x21,b"x"*61)
+        with self.assertRaises(ValueError): encode_rpm_telemetry((1<<23,))
+        with self.assertRaises(ValueError): encode_rpm_telemetry((True,))
+        with self.assertRaises(ValueError): encode_temperature_telemetry((float("nan"),))
+        self.assertEqual(len(encode_flight_mode("x"*200)),64)
+
+    def test_slow_radio_writer_keeps_only_latest_bounded_snapshot(self):
+        from crsf import CRSFTransmit, encode_flight_mode
+        entered=threading.Event();release=threading.Event()
+        class Serial:
+            writes=[]
+            def write(self,frame): entered.set();release.wait(.5);self.writes.append(frame);return len(frame)
+        serial=Serial();writer=CRSFTransmit(serial,hz=10).start()
+        writer.publish((encode_flight_mode("first"),));self.assertTrue(entered.wait(.2))
+        before=time.monotonic()
+        for i in range(100): writer.publish((encode_flight_mode(str(i)),))
+        self.assertLess(time.monotonic()-before,.05);self.assertGreaterEqual(writer.dropped_batches,99)
+        release.set();time.sleep(.13);writer.close()
+        self.assertLessEqual(len(serial.writes),2)
+        self.assertEqual(CRSFParser().feed(serial.writes[-1])[0].payload,b"99\x00")
+
+    def test_tx_failure_is_visible_and_receive_state_is_independent(self):
+        from crsf import CRSFTransmit, encode_flight_mode
+        class Serial:
+            def write(self,frame): raise OSError("TX disconnected")
+        writer=CRSFTransmit(Serial()).start();writer.publish((encode_flight_mode("READY"),))
+        deadline=time.monotonic()+.5
+        while writer.error is None and time.monotonic()<deadline: time.sleep(.001)
+        self.assertIn("TX disconnected",writer.error);writer.close()

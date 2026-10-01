@@ -1,35 +1,59 @@
-"""Fast HAT link framing and failure behavior, with no motor hardware."""
-
+"""Protocol-v2 transport, replay, acknowledgment and stop-race regressions."""
+from dataclasses import replace
+import math
 import struct
 import threading
 import time
 import unittest
 
 from fast_hat import (
-    FastConfig, FastHat, FastHatError, FrameParser, FrameType, HatState,
-    crc16_ccitt_false, decode_status, encode_frame,
+    Capability, ConfigResult, FastConfig, FastHat, FastHatError, FrameParser,
+    FrameType, HatState, HoldFlag, MAX_STATUS_BACKLOG, Profile, Reason,
+    StopState, Validity, crc16_ccitt_false, decode_status, encode_frame,
+)
+from protocol_defs import (
+    CONFIG_PREFIX, CONFIG_STRUCT, STATUS_HEADER_FIELDS, STATUS_HEADER_STRUCT,
+    STATUS_LENGTH, TARGETS_STRUCT, WHEEL_FIELDS, WHEEL_STRUCT,
 )
 
 
-def status_payload(ack: int, state: HatState = HatState.DISARMED,
-                   *, wheel_age: int = 4, fault: int = 0) -> bytes:
-    header = struct.pack("<HBBHH", ack, state, fault, 18000, 8)
-    wheels = b"".join(struct.pack("<hhbBB", rpm, current, 25, 0, wheel_age)
-                      for rpm, current in ((-8, -180), (8, 180), (8, 180), (-8, -180)))
-    return header + wheels
+def status_payload(ack=1, state=HatState.DISARMED, *, wheel_age=4, fault=0,
+                   wheel_overrides=None, **changes):
+    h = dict.fromkeys(STATUS_HEADER_FIELDS, 0)
+    h.update(boot_id=0x1020304050607080, host_session=123, capabilities=255,
+             build_id=0x12345678, config_id=0, accepted_seq=ack, applied_seq=ack,
+             state=state, fault_code=fault, stop_state=StopState.CONFIRMED,
+             sweep_us=18000, command_age_ms=8, boost_capacity_ms=20000,
+             boost_remaining_ms=12500, boost_refill_remaining_ms=22500,
+             hello_nonce=11)
+    if state in (HatState.ARMED, HatState.SETTLING, HatState.HOLDING):
+        h['stop_state'] = StopState.NONE
+    h.update(changes)
+    w = dict(target_centi_rpm=-1250, rpm=0, current_ma=-180, position_raw=32000,
+             temp_c=25, effective_cap_ma=800, hold_cap_ma=300, age_ms=wheel_age,
+             temp_age_ms=400, error=0, mode=2, validity=15, reason_flags=0)
+    w.update(wheel_overrides or {})
+    return (STATUS_HEADER_STRUCT.pack(*(h[n] for n in STATUS_HEADER_FIELDS)) +
+            b''.join(WHEEL_STRUCT.pack(*(w[n] for n in WHEEL_FIELDS)) for _ in range(4)))
 
 
 class FakeSerial:
     def __init__(self, *, auto_ack=False):
-        self.timeout = 0.01
-        self.write_timeout = 0.15
+        self.timeout = .01
+        self.write_timeout = .15
         self.auto_ack = auto_ack
-        self.writes: list[bytes] = []
+        self.writes = []
         self._input = bytearray()
         self._condition = threading.Condition()
         self.closed = False
         self.read_error = False
         self.status_sequence = 41
+        self.boot_id = 0x1020304050607080
+        self.session = 122
+        self.nonce = 0
+        self.config_id = 0
+        self.config_ack_seq = 0
+        self.capabilities = 255
 
     @property
     def in_waiting(self):
@@ -40,31 +64,49 @@ class FakeSerial:
         with self._condition:
             self._input.clear()
 
-    def inject(self, data: bytes):
+    def inject(self, data):
         with self._condition:
             self._input.extend(data)
             self._condition.notify_all()
 
-    def read(self, size: int):
+    def read(self, size):
         with self._condition:
             self._condition.wait_for(lambda: self._input or self.closed or self.read_error,
                                      timeout=self.timeout)
             if self.read_error:
-                raise OSError("receiver unplugged")
-            if not self._input:
-                return b""
+                raise OSError('receiver unplugged')
             chunk = bytes(self._input[:size])
             del self._input[:size]
             return chunk
 
-    def write(self, data: bytes):
+    def response(self, frame, *, inject=True, **changes):
+        state = HatState.DISARMED
+        if frame.kind == FrameType.HELLO:
+            self.nonce, = struct.unpack('<Q', frame.payload)
+            self.session += 1
+            self.config_id = 0
+        if frame.kind == FrameType.CONFIG:
+            self.config_id = CONFIG_PREFIX.unpack_from(frame.payload)[2]
+            self.config_ack_seq = frame.sequence
+        if frame.kind in (FrameType.ARM, FrameType.TARGETS):
+            state = HatState.ARMED
+        settings = dict(boot_id=self.boot_id, host_session=self.session,
+                        hello_nonce=self.nonce, capabilities=self.capabilities,
+                        config_id=self.config_id, config_ack_seq=self.config_ack_seq,
+                        config_result=ConfigResult.APPLIED if self.config_id else ConfigResult.NONE)
+        settings.update(changes)
+        state = settings.pop('state', state)
+        raw = encode_frame(FrameType.STATUS, self.status_sequence,
+                           status_payload(frame.sequence, state, **settings))
+        self.status_sequence = (self.status_sequence + 1) & 0xffff
+        if inject:
+            self.inject(raw)
+        return raw
+
+    def write(self, data):
         self.writes.append(data)
         if self.auto_ack:
-            frame = FrameParser().feed(data)[0]
-            state = HatState.ARMED if frame.kind in (FrameType.ARM, FrameType.TARGETS) else HatState.DISARMED
-            self.inject(encode_frame(FrameType.STATUS, self.status_sequence,
-                                     status_payload(frame.sequence, state)))
-            self.status_sequence = (self.status_sequence + 1) & 0xFFFF
+            self.response(FrameParser().feed(data)[0])
         return len(data)
 
     def close(self):
@@ -73,179 +115,258 @@ class FakeSerial:
             self._condition.notify_all()
 
 
+def ready(hat, config=None):
+    hat.wait_ack(hat.hello())
+    hat.wait_ack(hat.send_config(config or FastConfig()))
+
+
+def wait_for(predicate, timeout=.3):
+    until = time.monotonic() + timeout
+    while not predicate() and time.monotonic() < until:
+        time.sleep(.001)
+    if not predicate():
+        raise AssertionError('Condition not reached')
+
+
 class FrameTests(unittest.TestCase):
     def test_crc_reference_vector(self):
-        self.assertEqual(crc16_ccitt_false(b"123456789"), 0x29B1)
+        self.assertEqual(crc16_ccitt_false(b'123456789'), 0x29B1)
 
-    def test_fragmented_corrupt_and_noisy_frames_resynchronize(self):
+    def test_fragmentation_corruption_v1_and_noise_resynchronize(self):
         parser = FrameParser()
-        good = encode_frame(FrameType.HELLO, 314)
-        damaged = bytearray(encode_frame(FrameType.STATUS_REQ, 7))
-        damaged[-1] ^= 0x80
-        invalid_length = b"\xa5\x5a\x01\x80\x01\x00\xff"
-        self.assertEqual(parser.feed(b"noise\xa5"), [])
+        good = encode_frame(FrameType.HELLO, 314, struct.pack('<Q', 123))
+        bad = bytearray(encode_frame(FrameType.STATUS_REQ, 7)); bad[-1] ^= 128
+        invalid_length = b'\xa5\x5a\x02\x80\x01\x00\xff'
+        self.assertEqual(parser.feed(b'noise\xa5'), [])
         self.assertEqual(parser.feed(good[1:5]), [])
-        self.assertEqual(parser.feed(good[5:]), [FrameParser().feed(good)[0]])
-        self.assertEqual(parser.feed(bytes(damaged) + invalid_length + good),
-                         [FrameParser().feed(good)[0]])
-        self.assertEqual(parser.bad_crc, 1)
-        self.assertEqual(parser.bad_length, 1)
-        self.assertGreater(parser.discarded_bytes, 0)
+        self.assertEqual(len(parser.feed(good[5:])), 1)
+        v1 = bytearray(good); v1[2] = 1
+        self.assertEqual(len(parser.feed(bytes(bad) + invalid_length + bytes(v1) + good)), 1)
+        self.assertEqual((parser.bad_crc, parser.bad_length, parser.bad_version), (1, 1, 1))
+        self.assertLessEqual(len(parser.buffer), 249)
 
-    def test_status_fields_and_unavailable_markers(self):
-        payload = bytearray(status_payload(22, HatState.ARMED, wheel_age=255))
-        payload[8 + 4] = 127  # first wheel temperature
-        result = decode_status(bytes(payload), received_at=10.0)
-        self.assertEqual(result.ack_seq, 22)
-        self.assertEqual(result.state, HatState.ARMED)
-        self.assertEqual(result.wheels[0].rpm, -8)
-        self.assertEqual(result.wheels[0].current_ma, -180)
-        self.assertIsNone(result.wheels[0].temp_c)
-        self.assertIsNone(result.wheels[0].age_ms)
-        self.assertFalse(result.stationary())
-        self.assertEqual(result.received_at, 10.0)
+    def test_status_validity_temperature_age_and_stop_are_independent(self):
+        raw = status_payload(22, HatState.FAULT, fault=10, stop_state=StopState.CONFIRMED,
+                             wheel_overrides=dict(validity=Validity.RPM | Validity.CURRENT,
+                                                  temp_age_ms=65535))
+        s = decode_status(raw, received_at=10)
+        self.assertEqual(len(raw), STATUS_LENGTH)
+        self.assertEqual(s.ack_seq, 22)
+        self.assertEqual(s.wheels[0].target_rpm, -12.5)
+        self.assertIsNone(s.wheels[0].temp_c)
+        self.assertIsNone(s.wheels[0].position_raw)
+        self.assertIsNone(s.wheels[0].temp_age_ms)
+        self.assertTrue(s.stationary())
+        self.assertTrue(s.stop_confirmed)
+        self.assertFalse(s.temperature_fresh(750))
+        self.assertFalse(s.motion_enabled)
+
+    def test_valid_speed_required_for_stationary_even_when_value_zero(self):
+        s = decode_status(status_payload(wheel_overrides=dict(validity=Validity.TEMPERATURE)))
+        self.assertFalse(s.stationary())
+        self.assertTrue(s.temperature_fresh(750))
+
+    def test_status_rejects_invalid_fields(self):
+        for changes in (dict(state=99), dict(fault=255), dict(stop_state=99),
+                        dict(requested_profile=3), dict(boost_remaining_ms=21000),
+                        dict(fault_wheel=5), dict(wheel_overrides=dict(effective_cap_ma=2701)),
+                        dict(wheel_overrides=dict(validity=16)), dict(wheel_overrides=dict(temp_c=200))):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                decode_status(status_payload(**changes))
+
+
+class ConfigTests(unittest.TestCase):
+    def test_candidate_caps_and_independent_firmware_ceiling(self):
+        c = FastConfig()
+        self.assertEqual((c.gentle_current_ma, c.normal_current_ma, c.boost_current_ma), (800,1500,2500))
+        self.assertEqual(c.max_current_ma,2700)
+        self.assertEqual(len(c.payload()),CONFIG_STRUCT.size)
+        self.assertNotEqual(c.configuration_id,replace(c,max_current_ma=2600).configuration_id)
+        self.assertEqual((c.boost_capacity_ms,c.boost_refill_ms,c.temp_warn_c,c.temp_derate_c,c.temp_limit_c),
+                         (20000,60000,50,55,65))
+
+    def test_strict_types_ranges_and_cross_constraints(self):
+        for field,value in [('max_rpm',True),('max_current_ma',2701),('temp_poll_ms',501),
+                            ('boost_refill_ms',59999),('hold_enabled',1),('max_rpm','40'),
+                            ('temp_warn_c',55),('temp_release_c',55),('temp_boost_stale_ms',500),
+                            ('hold_temp_c',40),('feedback_timeout_ms',300),('disarmed_hold_enabled',True)]:
+            c = replace(FastConfig(), **{field:value})
+            if field == 'disarmed_hold_enabled':
+                c = replace(c,hold_enabled=False)
+            with self.subTest(field=field,value=value), self.assertRaises(ValueError):
+                c.payload()
 
 
 class FastHatTests(unittest.TestCase):
-    def test_invalid_config_is_rejected_before_serial_write(self):
-        fake = FakeSerial()
-        with FastHat("test", serial_port=fake) as hat:
-            invalid = FastConfig(201, 1000, 300, 120, 180, 20, 4, 1, 400, 20, 900, 65)
-            with self.assertRaisesRegex(ValueError, "max_rpm"):
-                hat.send_config(invalid)
-            self.assertEqual(fake.writes, [])
-
-    def test_config_and_targets_wire_layout_with_ack(self):
+    def test_no_motion_on_open_and_v2_session_configuration_target_layout(self):
         fake = FakeSerial(auto_ack=True)
-        with FastHat("test", timeout=0.2, serial_port=fake) as hat:
-            self.assertEqual(fake.writes, [])
-            hello = hat.hello()
-            self.assertEqual(hat.wait_ack(hello).state, HatState.DISARMED)
-            config = FastConfig(40, 1000, 300, 120, 180, 20, 4, 1, 400, 20, 900, 65)
-            config_seq = hat.send_config(config)
-            self.assertEqual(hat.wait_ack(config_seq).ack_seq, config_seq)
-            config_frame = FrameParser().feed(fake.writes[-1])[0]
-            self.assertEqual(config_frame.kind, FrameType.CONFIG)
-            self.assertEqual(config_frame.payload, struct.pack("<11HB", 40, 1000, 300, 120,
-                                                               180, 20, 4, 1, 400, 20, 900, 65))
+        with FastHat('test',timeout=.2,serial_port=fake) as hat:
+            self.assertEqual(fake.writes,[])
+            ready(hat)
+            cframe = FrameParser().feed(fake.writes[-1])[0]
+            self.assertEqual(cframe.payload[20:],FastConfig().payload())
+            self.assertEqual(CONFIG_PREFIX.unpack_from(cframe.payload),
+                             (fake.boot_id,fake.session,FastConfig().configuration_id))
             with self.assertRaises(FastHatError):
-                hat.targets((-10, 10, 10, -10), 300)
-            arm_seq = hat.arm()
-            self.assertEqual(hat.wait_ack(arm_seq).state, HatState.ARMED)
-            target_seq = hat.targets((-10, 10, 10, -10), 300)
-            self.assertEqual(hat.wait_ack(target_seq).state, HatState.ARMED)
-            target_frame = FrameParser().feed(fake.writes[-1])[0]
-            self.assertEqual(target_frame.payload, struct.pack("<hhhhH", -10, 10, 10, -10, 300))
+                hat.targets((-12.25,12.25,12.25,-12.25),Profile.NORMAL)
+            hat.wait_ack(hat.arm())
+            hat.wait_ack(hat.targets((-12.25,12.25,12.25,-12.25),Profile.NORMAL))
+            target = FrameParser().feed(fake.writes[-1])[0]
+            self.assertEqual(TARGETS_STRUCT.unpack(target.payload),
+                             (fake.boot_id,fake.session,-1225,1225,1225,-1225,1))
             self.assertIsNotNone(hat.stats().last_rtt_ms)
-            stop_seq = hat.stop()
-            self.assertEqual(hat.wait_ack(stop_seq).state, HatState.DISARMED)
+            self.assertTrue(hat.wait_ack(hat.stop()).stop_confirmed)
             with self.assertRaises(FastHatError):
-                hat.targets((0, 0, 0, 0), 0)
+                hat.targets((0,0,0,0),Profile.GENTLE)
         self.assertTrue(fake.closed)
-        self.assertEqual(FrameParser().feed(fake.writes[-1])[0].kind, FrameType.STOP)
+        self.assertEqual(FrameParser().feed(fake.writes[-1])[0].kind,FrameType.STOP)
 
-    def test_bad_status_does_not_satisfy_ack(self):
+    def test_preconditions_and_invalid_config_do_not_write(self):
         fake = FakeSerial()
-        with FastHat("test", timeout=0.08, serial_port=fake) as hat:
-            sequence = hat.hello()
-            fake.inject(encode_frame(FrameType.STATUS, 1, b"invalid"))
-            with self.assertRaisesRegex(FastHatError, "No HAT ACK"):
-                hat.wait_ack(sequence)
-            self.assertEqual(hat.stats().bad_status, 1)
+        with FastHat('test',serial_port=fake) as hat:
+            with self.assertRaises(ValueError):hat.send_config(replace(FastConfig(),max_rpm=201))
+            with self.assertRaises(FastHatError):hat.arm()
+            with self.assertRaises(FastHatError):hat.send_config(FastConfig())
+            self.assertEqual(fake.writes,[])
 
-    def test_arm_ack_requires_armed_state(self):
+    def test_bad_status_and_wrong_hello_nonce_cannot_establish_session(self):
         fake = FakeSerial()
-        with FastHat("test", timeout=0.1, serial_port=fake) as hat:
-            sequence = hat.arm()
-            fake.inject(encode_frame(FrameType.STATUS, 5, status_payload(sequence, HatState.DISARMED)))
-            with self.assertRaisesRegex(FastHatError, "without entering ARMED"):
-                hat.wait_ack(sequence)
-            with self.assertRaises(FastHatError):
-                hat.targets((1, 1, 1, 1), 100)
+        with FastHat('test',timeout=.05,serial_port=fake) as hat:
+            seq = hat.hello(); frame = FrameParser().feed(fake.writes[-1])[0]
+            fake.inject(encode_frame(FrameType.STATUS,1,b'bad'))
+            fake.response(frame,hello_nonce=123)
+            with self.assertRaisesRegex(FastHatError,'No HAT ACK'):hat.wait_ack(seq)
+            self.assertEqual(hat.stats().bad_status,1)
+            self.assertIsNone(hat.snapshot())
 
-    def test_corrupt_status_is_ignored_then_fresh_status_accepted(self):
-        fake = FakeSerial()
-        with FastHat("test", timeout=0.2, serial_port=fake) as hat:
-            sequence = hat.hello()
-            bad = bytearray(encode_frame(FrameType.STATUS, 1, status_payload(sequence)))
-            bad[-1] ^= 1
-            fake.inject(bytes(bad) + encode_frame(FrameType.STATUS, 2, status_payload(sequence)))
-            status = hat.wait_ack(sequence)
-            self.assertEqual(status.ack_seq, sequence)
-            self.assertEqual(hat.stats().bad_crc, 1)
+    def test_missing_capability_refuses_hello(self):
+        fake = FakeSerial(auto_ack=True);fake.capabilities=127
+        with FastHat('test',timeout=.2,serial_port=fake) as hat:
+            with self.assertRaisesRegex(FastHatError,'capabilities'):hat.wait_ack(hat.hello())
+            with self.assertRaises(FastHatError):hat.arm()
 
-    def test_duplicate_or_old_status_does_not_refresh_feedback(self):
-        fake = FakeSerial()
-        with FastHat("test", timeout=0.2, serial_port=fake) as hat:
-            sequence = hat.hello()
-            fake.inject(encode_frame(FrameType.STATUS, 100, status_payload(sequence)))
-            first = hat.wait_ack(sequence)
-            fake.inject(encode_frame(FrameType.STATUS, 100, status_payload(sequence)) +
-                        encode_frame(FrameType.STATUS, 99, status_payload(sequence)))
-            deadline = time.monotonic() + 0.2
-            while hat.stats().old_status < 2 and time.monotonic() < deadline:
-                time.sleep(0.001)
-            self.assertEqual(hat.stats().old_status, 2)
-            self.assertEqual(hat.snapshot().received_at, first.received_at)
-
-    def test_status_interval_metrics_measure_accepted_reports(self):
-        fake = FakeSerial()
-        with FastHat("test", timeout=0.2, serial_port=fake) as hat:
-            sequence = hat.hello()
-            fake.inject(encode_frame(FrameType.STATUS, 100, status_payload(sequence)))
-            hat.wait_ack(sequence)
-            time.sleep(0.005)
-            fake.inject(encode_frame(FrameType.STATUS, 101, status_payload(sequence)))
-            deadline = time.monotonic() + 0.2
-            while hat.stats().status_frames < 2 and time.monotonic() < deadline:
-                time.sleep(0.001)
-            stats = hat.stats()
-            self.assertEqual(stats.status_frames, 2)
-            self.assertIsNotNone(stats.last_status_interval_ms)
-            self.assertGreater(stats.last_status_interval_ms, 0)
-            self.assertEqual(stats.last_status_interval_ms, stats.mean_status_interval_ms)
-            self.assertEqual(stats.last_status_interval_ms, stats.max_status_interval_ms)
-
-    def test_hello_can_restart_status_freshness_after_hat_reboot(self):
+    def test_config_ack_exact_identity_required(self):
         fake = FakeSerial(auto_ack=True)
-        with FastHat("test", timeout=0.2, serial_port=fake) as hat:
-            first = hat.hello()
-            self.assertEqual(hat.wait_ack(first).ack_seq, first)
-            fake.status_sequence = 0  # ESP32 restarted while the Pi remained open.
-            second = hat.hello()
-            self.assertEqual(hat.wait_ack(second).ack_seq, second)
+        with FastHat('test',timeout=.2,serial_port=fake) as hat:
+            hat.wait_ack(hat.hello());fake.auto_ack=False
+            seq = hat.send_config(FastConfig());frame=FrameParser().feed(fake.writes[-1])[0]
+            fake.response(frame,config_id=12345)
+            with self.assertRaisesRegex(FastHatError,'exact stopped CONFIG'):hat.wait_ack(seq)
+            with self.assertRaises(FastHatError):hat.arm()
 
-    def test_reader_failure_still_allows_best_effort_stop(self):
-        fake = FakeSerial()
-        with FastHat("test", timeout=0.1, serial_port=fake) as hat:
-            fake.read_error = True
-            fake.inject(b"x")
-            deadline = time.monotonic() + 0.2
-            while hat.stats().reader_error is None and time.monotonic() < deadline:
-                time.sleep(0.001)
-            self.assertIsNotNone(hat.stats().reader_error)
-            with self.assertRaises(FastHatError):
-                hat.hello()
-            seq = hat.stop()
-            self.assertEqual(FrameParser().feed(fake.writes[-1])[0].sequence, seq)
+    def test_config_rejection_is_explicit_without_advancing_motion_sequence(self):
+        fake=FakeSerial(auto_ack=True)
+        with FastHat('test',timeout=.2,serial_port=fake) as hat:
+            hello=hat.hello();hat.wait_ack(hello);fake.auto_ack=False
+            seq=hat.send_config(FastConfig());frame=FrameParser().feed(fake.writes[-1])[0]
+            fake.response(frame,accepted_seq=hello,applied_seq=hello,
+                          config_result=ConfigResult.REJECTED_VALUE,config_id=0)
+            with self.assertRaisesRegex(FastHatError,'rejected CONFIG.*REJECTED_VALUE'):
+                hat.wait_ack(seq)
+            self.assertEqual(hat.snapshot().accepted_seq,hello)
+            with self.assertRaises(FastHatError):hat.arm()
 
-    def test_large_status_backlog_faults_instead_of_retimestamping_old_feedback(self):
-        class BacklogSerial(FakeSerial):
-            overfull = False
+    def test_arm_ack_requires_enabled_state(self):
+        fake=FakeSerial(auto_ack=True)
+        with FastHat('test',timeout=.2,serial_port=fake) as hat:
+            ready(hat);fake.auto_ack=False
+            seq=hat.arm();fake.response(FrameParser().feed(fake.writes[-1])[0],state=HatState.DISARMED)
+            with self.assertRaisesRegex(FastHatError,'without entering ARMED'):hat.wait_ack(seq)
 
-            @property
-            def in_waiting(self):
-                return 300 if self.overfull else super().in_waiting
+    def test_stop_invalidates_pending_arm_ack_before_or_after_arm_write(self):
+        fake=FakeSerial(auto_ack=True)
+        with FastHat('test',timeout=.2,serial_port=fake) as hat:
+            ready(hat);fake.auto_ack=False
+            arm=hat.arm();aframe=FrameParser().feed(fake.writes[-1])[0]
+            stop=hat.stop()
+            fake.response(aframe)
+            with self.assertRaisesRegex(FastHatError,'STOP superseded'):hat.wait_ack(arm)
+            with self.assertRaises(FastHatError):hat.targets((1,1,1,1),Profile.GENTLE)
+            with self.assertRaises(FastHatError):hat.arm()
+            self.assertEqual(FrameParser().feed(fake.writes[-1])[0].sequence,stop)
 
-        fake = BacklogSerial()
-        with FastHat("test", timeout=0.1, serial_port=fake) as hat:
-            fake.overfull = True
-            deadline = time.monotonic() + 0.2
-            while hat.stats().reader_error is None and time.monotonic() < deadline:
-                time.sleep(0.001)
-            self.assertIn("backlog", hat.stats().reader_error)
-            hat.stop()
+    def test_stop_precedes_arm_queued_for_write_lock(self):
+        fake=FakeSerial(auto_ack=True)
+        with FastHat('test',timeout=.2,serial_port=fake) as hat:
+            ready(hat);hat._write_lock.acquire();errors=[]
+            thread=threading.Thread(target=lambda:self.capture_arm(hat,errors));thread.start()
+            time.sleep(.01)
+            stopper=threading.Thread(target=hat.stop);stopper.start()
+            wait_for(lambda:hat._stop_pending)
+            hat._write_lock.release();thread.join(.3);stopper.join(.3)
+            self.assertEqual(len(errors),1)
+            self.assertIn('STOP superseded',str(errors[0]))
+            self.assertNotIn(FrameType.ARM,[FrameParser().feed(w)[0].kind for w in fake.writes])
+
+    @staticmethod
+    def capture_arm(hat,errors):
+        try:hat.arm()
+        except FastHatError as exc:errors.append(exc)
+
+    def test_fault_does_not_erase_stop_confirmation_or_block_stop_ack(self):
+        fake=FakeSerial(auto_ack=True)
+        with FastHat('test',timeout=.2,serial_port=fake) as hat:
+            ready(hat);fake.auto_ack=False;seq=hat.stop()
+            fake.response(FrameParser().feed(fake.writes[-1])[0],state=HatState.FAULT,fault=6)
+            status=hat.wait_ack(seq)
+            self.assertEqual(status.fault_code,6)
+            self.assertTrue(status.stop_confirmed)
+
+    def test_duplicate_old_status_and_rollover(self):
+        fake=FakeSerial(auto_ack=True);fake.status_sequence=65535
+        with FastHat('test',timeout=.2,serial_port=fake) as hat:
+            hat.wait_ack(hat.hello());ready_config=hat.send_config(FastConfig());hat.wait_ack(ready_config)
+            current=hat.snapshot();frame=FrameParser().feed(fake.writes[-1])[0]
+            fake.status_sequence=0;fake.response(frame);fake.status_sequence=65535;fake.response(frame)
+            wait_for(lambda:hat.stats().old_status==2)
+            self.assertEqual(hat.snapshot().received_at,current.received_at)
+
+    def test_boot_identity_change_latches_motion_inhibition_then_new_hello_recovers(self):
+        fake=FakeSerial(auto_ack=True)
+        with FastHat('test',timeout=.2,serial_port=fake) as hat:
+            ready(hat);hat.wait_ack(hat.arm())
+            fake.boot_id += 1;fake.status_sequence=0
+            fake.response(FrameParser().feed(fake.writes[-1])[0])
+            wait_for(lambda:hat._identity_error is not None)
+            with self.assertRaises(FastHatError):hat.targets((1,1,1,1),Profile.GENTLE)
+            ready(hat)
+            self.assertEqual(hat.snapshot().boot_id,fake.boot_id)
+            self.assertFalse(hat.snapshot().motion_enabled)
+
+    def test_corrupt_status_ignored_fresh_status_acknowledged(self):
+        fake=FakeSerial()
+        with FastHat('test',timeout=.2,serial_port=fake) as hat:
+            seq=hat.hello();frame=FrameParser().feed(fake.writes[-1])[0]
+            bad=bytearray(fake.response(frame,inject=False));bad[-1]^=1
+            fake.inject(bytes(bad));fake.response(frame)
+            self.assertEqual(hat.wait_ack(seq).ack_seq,seq)
+            self.assertEqual(hat.stats().bad_crc,1)
+
+    def test_reader_error_and_backlog_still_allow_best_effort_stop(self):
+        for backlog in (False,True):
+            class Backlog(FakeSerial):
+                overfull=False
+                @property
+                def in_waiting(self):return MAX_STATUS_BACKLOG+1 if self.overfull else super().in_waiting
+            fake=Backlog()
+            with FastHat('test',timeout=.1,serial_port=fake) as hat:
+                if backlog:fake.overfull=True
+                else:fake.read_error=True;fake.inject(b'x')
+                wait_for(lambda:hat.stats().reader_error is not None)
+                with self.assertRaises(FastHatError):hat.hello()
+                seq=hat.stop()
+                self.assertEqual(FrameParser().feed(fake.writes[-1])[0].sequence,seq)
+
+    def test_nonfinite_targets_and_invalid_profile_rejected(self):
+        fake=FakeSerial(auto_ack=True)
+        with FastHat('test',timeout=.2,serial_port=fake) as hat:
+            ready(hat);hat.wait_ack(hat.arm())
+            for value in (math.nan,math.inf,True,'1',41):
+                with self.subTest(value=value),self.assertRaises(ValueError):
+                    hat.targets((value,0,0,0),Profile.NORMAL)
+            for profile in (True,300,'Boost'):
+                with self.subTest(profile=profile),self.assertRaises(ValueError):
+                    hat.targets((0,0,0,0),profile)
 
 
-if __name__ == "__main__":
-    unittest.main()
+if __name__=='__main__':unittest.main()

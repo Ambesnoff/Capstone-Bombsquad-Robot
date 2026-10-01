@@ -300,3 +300,53 @@ class RobotTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ConfigurationAndProfileTests(unittest.TestCase):
+    def test_unknown_boolean_and_nonfinite_configuration_are_rejected(self):
+        for update in ({"max_rpm": True}, {"steering_gain": float("nan")}, {"typo_current_a": 2.5},
+                       {"radio_telemetry_enabled": 1}):
+            data = json.loads(CONFIG.read_text()); data.update(update)
+            with self.subTest(update=update), self.assertRaises(ValueError): Settings.from_dict(data)
+
+    def test_full_candidate_uses_shared_firmware_validator(self):
+        data = json.loads(CONFIG.read_text());data["protection"]["temp_poll_ms"] = 800
+        with self.assertRaisesRegex(ValueError, "temp_poll_ms"): Settings.from_dict(data)
+        data = json.loads(CONFIG.read_text());data["profiles"]["boost_capacity_s"] = 21
+        with self.assertRaisesRegex(ValueError, "boost_capacity_ms"): Settings.from_dict(data)
+
+    def test_identity_reproducible_and_complete(self):
+        cfg = settings(); rebuilt = Settings.from_dict(cfg.to_dict())
+        self.assertEqual(cfg.configuration_identity, rebuilt.configuration_identity)
+        self.assertNotEqual(cfg.configuration_identity, replace(cfg, radio_timeout_s=.3).configuration_identity)
+
+    def test_example_channels_map_mode6_arm5_stop7_reverse8(self):
+        cfg = settings()
+        self.assertEqual((cfg.channels.profile, cfg.channels.arm, cfg.channels.stop, cfg.channels.reverse), (6,5,7,8))
+
+    def test_three_position_debounce_invalid_and_frame_replay(self):
+        from robot_radio import Profile, ProfileSelector
+        selector=ProfileSelector(settings().profiles)
+        self.assertEqual(selector.observe(1811,10),Profile.GENTLE)
+        self.assertEqual(selector.observe(1811,10),Profile.GENTLE)
+        self.assertEqual(selector.observe(1811,10.2),Profile.BOOST)
+        self.assertEqual(selector.observe(1200,10.3),Profile.GENTLE)
+        self.assertFalse(selector.valid)
+        self.assertEqual(selector.observe(992,10.4),Profile.GENTLE)
+        self.assertEqual(selector.observe(992,10.6),Profile.NORMAL)
+        self.assertEqual(selector.observe(172,10.7),Profile.GENTLE)
+
+    def test_legacy_retains_dial_and_original_channel_mapping(self):
+        cfg=Settings.from_dict(json.loads(CONFIG.with_name("config.legacy.example.json").read_text()))
+        self.assertEqual((cfg.motor_backend,cfg.channels.current_dial,cfg.channels.arm,cfg.channels.reverse),("legacy",10,5,6))
+        self.assertAlmostEqual(drive_request(snapshot(),cfg).current_cap_a,1.0)
+
+
+class NeutralArmingTests(unittest.TestCase):
+    def test_steering_must_be_neutral_and_unsafe_high_edge_is_consumed(self):
+        cfg=settings();gate=ArmingGate(cfg);now=time.monotonic()
+        gate.observe(snapshot(arm=172,now=now),now)
+        self.assertNotEqual(gate.observe(snapshot(arm=1811,steering=1811,now=now),now),"newly_armed")
+        self.assertNotEqual(gate.observe(snapshot(arm=1811,steering=992,now=now),now),"newly_armed")
+        gate.observe(snapshot(arm=172,now=now),now)
+        self.assertEqual(gate.observe(snapshot(arm=1811,now=now),now),"newly_armed")
