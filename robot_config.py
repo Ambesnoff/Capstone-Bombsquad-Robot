@@ -78,7 +78,6 @@ class ProfileSettings:
     gentle_a: float = 0.8
     normal_a: float = 1.5
     boost_a: float = 2.5
-    independent_ceiling_a: float = 2.7
     boost_capacity_s: float = 20.0
     boost_refill_s: float = 60.0
     cap_ramp_a_s: float = 1.0
@@ -245,15 +244,20 @@ class Settings:
         if backend == "fast" and hat_baud != 230400:
             raise ValueError("Fast HAT firmware uses 230400 baud on the Pi connection")
         profiles = ProfileSettings.from_dict(data.get("profiles", {}))
+        # Fast backend: max_current_a is the single independent HAT current ceiling.
         max_current = _number(data["max_current_a"], "max_current_a", 0.1, 1.2 if backend == "legacy" else 2.7)
         brake = _number(data["neutral_braking_current_a"], "neutral_braking_current_a", 0, 2.7)
-        if brake > (min(max_current, profiles.independent_ceiling_a) if backend == "fast" else max_current):
-            raise ValueError("neutral_braking_current_a cannot exceed max_current_a or the independent ceiling")
+        if brake > max_current:
+            raise ValueError("neutral_braking_current_a cannot exceed max_current_a")
         temp_limit = _integer(data.get("temp_limit_c", 65), "temp_limit_c", 40, 70)
-        protection = ProtectionSettings.from_dict(data.get("protection", {}), temp_limit, profiles.independent_ceiling_a)
+        protection = ProtectionSettings.from_dict(data.get("protection", {}), temp_limit, max_current)
         motor_timeout = _number(data["motor_timeout_s"], "motor_timeout_s", 0.05, 1)
-        heartbeat = _integer(data["hat_heartbeat_ms"], "hat_heartbeat_ms", 100, 2000)
-        if heartbeat / 1000 <= motor_timeout:
+        if backend == "legacy":
+            loop_period, heartbeat = data["loop_period_s"], data["hat_heartbeat_ms"]
+        else:  # Only the legacy factory-firmware drive uses these two settings.
+            loop_period, heartbeat = data.get("loop_period_s", 0.1), data.get("hat_heartbeat_ms", 600)
+        heartbeat = _integer(heartbeat, "hat_heartbeat_ms", 100, 2000)
+        if backend == "legacy" and heartbeat / 1000 <= motor_timeout:
             raise ValueError("HAT heartbeat must exceed motor transaction timeout")
         candidate = cls(
             motor_port=data["motor_port"], radio_port=data["radio_port"], wheels=tuple(wheels),
@@ -266,7 +270,7 @@ class Settings:
             steering_gain=_number(data["steering_gain"], "steering_gain", 0, 1),
             kp_a_per_rpm=_number(data["kp_a_per_rpm"], "kp_a_per_rpm", 0, 1),
             ki_a_per_rpm_s=_number(data["ki_a_per_rpm_s"], "ki_a_per_rpm_s", 0, 1),
-            loop_period_s=_number(data["loop_period_s"], "loop_period_s", 0.05, 1),
+            loop_period_s=_number(loop_period, "loop_period_s", 0.05, 1),
             radio_timeout_s=_number(data["radio_timeout_s"], "radio_timeout_s", 0.1, 2),
             link_timeout_s=_number(data["link_timeout_s"], "link_timeout_s", 0.2, 3),
             motor_timeout_s=motor_timeout, hat_heartbeat_ms=heartbeat,
@@ -309,7 +313,7 @@ def hat_configuration(settings: Settings) -> FastConfig:
     p, protection = settings.profiles, settings.protection
     cfg = FastConfig(
         max_rpm=settings.max_rpm,
-        max_current_ma=round(min(settings.max_current_a, p.independent_ceiling_a) * 1000),
+        max_current_ma=round(settings.max_current_a * 1000),
         neutral_brake_ma=round(settings.neutral_braking_current_a * 1000),
         accel_rpm_s=round(settings.acceleration_rpm_s), decel_rpm_s=round(settings.deceleration_rpm_s),
         kp_ma_per_rpm=round(settings.kp_a_per_rpm * 1000),
