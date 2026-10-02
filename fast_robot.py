@@ -330,7 +330,13 @@ class FastRobot:
             try:
                 seq = self._hat.hello()
                 self._hat.wait_ack(seq, timeout=1.5)
-                stopped = self._wait_disarmed(3)
+                try:
+                    stopped = self._wait_disarmed(3)
+                except FastHatError:
+                    # The HAT answers but cannot confirm a stop, e.g. motor power is
+                    # off at the independent cutoff. Wait for its own recovery rather
+                    # than spending service restarts; a silent HAT raises here.
+                    stopped = self._await_hat_recovery(self._raw_status())
                 if stopped.fault_code:
                     stopped = self._await_hat_recovery(stopped)
                 self._boot_id, self._session_id = stopped.boot_id, stopped.host_session
@@ -367,8 +373,9 @@ class FastRobot:
                 return status
             if not waiting:
                 waiting = True
-                self._last_inhibition = (f"Waiting for HAT recovery: fault {status.fault_code} wheel "
-                                         f"{status.fault_wheel}; motion inhibited, fresh arm cycle required")
+                cause = (f"fault {status.fault_code} wheel {status.fault_wheel}" if status.fault_code
+                         else "stop not confirmed; check motor power and wheel feedback")
+                self._last_inhibition = f"Waiting for HAT recovery: {cause}; motion inhibited, fresh arm cycle required"
                 self._event("waiting_for_hat_recovery", fault=int(status.fault_code), wheel=status.fault_wheel)
             self._publish_stop(status.stop_state, status=status)
             if self._hat is not None and time.monotonic() - last_query >= 0.1:

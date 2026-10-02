@@ -26,6 +26,8 @@ The Pi requests motion; the HAT owns operating transitions and protective limits
 
 Radio loss, recoverable communication faults, command expiry, and stale temperature return to readiness after a confirmed stop and the cooldown dwell of fresh healthy feedback; overtemperature also waits for every motor to cool to the release temperature. Readiness is not permission to drive: the Pi requires a new neutral arm cycle. Motor errors, abnormal current, validated stall, and other inspection faults remain inhibited until the cause is resolved, the HAT is reset, and the Pi supervisor is restarted. Stop confirmation can change while the cause remains latched.
 
+A starting or reconnecting supervisor waits, motion-inhibited and visible, while the HAT clears a recoverable fault or cannot yet confirm a stop (for example, motor power off at the independent cutoff). Only a silent HAT or an inspection-level fault ends the session attempt and uses the bounded service restarts.
+
 The Pi is the sole motor-command writer. Shutdown handlers record cancellation; pending arm/target paths check it so they cannot restore motion after stopping is requested. HAT and radio readers publish snapshots. Logging, local feedback, and optional CRSF return telemetry consume those snapshots with bounded queues; they never issue competing motor commands.
 
 The ESP32 progress watchdog uses reset/panic behavior and is fed by completed bounded control/stop/poll work. A busy loop or stalled I/O must not be allowed to masquerade as control progress. Physical watchdog hang/reset-to-stop behavior remains a commissioning measurement. Hardware cutoff removes motor power independently and can remove powered holding.

@@ -35,6 +35,7 @@ The complete Python test suite, generated-definition check, firmware-source iden
 - Actual board: `esp32:esp32:esp32`, Arduino-ESP32 **3.3.12**, ESP-IDF **5.5.5**.
 - Firmware source SHA256: `bf82bb7d88316ec81bf876dae3cf9849ce8f771e8ab5dc602da510937d7eebe5`; reported build ID `0xbf82bb7d`.
 - Firmware compilation after review fixes: **283444 bytes flash, 23068 bytes RAM**.
+- **Superseded by the audit fixes (PR #2, see `AUDIT.md`):** the firmware sources changed, so the build ID is now `0x4ff06011` and the ESP32 compile above no longer applies. Recompile with Arduino-ESP32 3.3.12 and record the new sizes. `python3 tools/verify.py` (Python 3.14.8) runs the software checks under Clang and GNU GCC.
 - The native simulator is behavioral evidence. Its mechanics, temperature evolution and watchdog reboot modeling are not calibration of the real robot.
 
 Reproduce from the checkout:
@@ -56,7 +57,7 @@ Stages 4–6 require physical measurements. They cannot be truthfully completed 
 
 - Install and verify independent motor-power removal, computer supply/backfeed behavior, power-loss retention, and actual watchdog reset-to-stop timing.
 - Verify the actual SB channel and its three received values. Verify receiver telemetry routing and Pocket/EdgeTX discovery/display for each wheel's RPM/temperature and drive-state text.
-- Measure the encoder feedback period/scaling and temperature encoding. `encoder_counts_per_rev=65536` is an **unverified commissioning assumption**, not a measured hardware fact; modular arithmetic is tested for 32768 and 65536.
+- Measure the encoder feedback period/scaling and temperature encoding. `encoder_counts_per_rev=32768` follows Waveshare's documented 0–32767 position range but is still an **unverified commissioning assumption**, not a measured hardware fact; modular arithmetic is tested for 32768 and 65536.
 - Measure bus/sweep/command timing, freshness, missed deadlines, wheel direction, loaded drive response, stopping distance/time, hold drift, reversal and turning.
 - Record numerical acceptance criteria, load and surface; measure current/temperature peaks, repeated Boost cycles, stalls, connection/power faults and slopes. Normal and Boost require separate measured electrical/thermal acceptance.
 - Refine settings from those records, then qualify each hardware/configuration/load/surface combination. Retire legacy driving only after acceptance; keep `motor_setup.py` and `ddsm115.py` for factory motor-ID setup.

@@ -590,6 +590,27 @@ class HatRecoveryTests(unittest.TestCase):
         recovered=[e for e in events if e["event"]=="readiness_recovered"]
         self.assertTrue(recovered[0]["deliberate_rearm_required"])
 
+    def test_motor_power_off_at_startup_waits_instead_of_exhausting_restarts(self):
+        # Powered up with the independent cutoff open: the HAT answers, but no
+        # wheel feedback can confirm a stop until motor power returns.
+        class PoweredDownHat(RecoveringHat):
+            def hello(self):
+                seq=super().hello();self.stop_state=StopState.UNCONFIRMED;self.ages=(None,)*4
+                return seq
+            def recover(self):
+                super().recover();self.stop_state=StopState.CONFIRMED;self.ages=(0,0,0,0)
+        unconfirmed=FastHatError("Stop unconfirmed: four fresh stationary motor readings are required")
+        with patch("fast_robot.time.sleep"),patch.object(FastRobot,"_wait_disarmed",side_effect=unconfirmed):
+            robot=FastRobot(settings(),PhaseRadio([{}]),telemetry_path=Path("unused.csv"),live_status=False)
+            hat=PoweredDownHat(FaultCode.MOTOR_TIMEOUT,1,on_query=lambda hat:hat.recover() if hat.queries==3 else None)
+            robot._hat=hat
+            robot._establish_session()
+        kinds=[c[0] for c in hat.commands]
+        self.assertEqual(kinds.count("hello"),1)
+        self.assertEqual(kinds[-1],"config")
+        self.assertGreaterEqual(hat.queries,3)
+        self.assertFalse({"arm","targets"}&set(kinds))
+
     def test_recovery_wait_ends_on_inspection_shutdown_stale_status_or_new_identity(self):
         cases={"inspection_flag":(lambda hat,robot:setattr(hat,"reasons",Reason.INSPECTION_REQUIRED),FastHatError,3),
                "inspection_fault":(lambda hat,robot:setattr(hat,"fault",FaultCode.STALL),FastHatError,3),
