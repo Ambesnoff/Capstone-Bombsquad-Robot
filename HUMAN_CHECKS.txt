@@ -58,15 +58,23 @@ SOFTWARE CHECKS
 - The robot runs Python 3.14.8. Full verification must use 3.14.8
   (see README "Run and verify").
 - On a Mac, "g++" is Apple clang. Real GNU GCC is "g++-16" (Homebrew).
+- Raspberry Pi OS has no Python 3.14. Install 3.14.8 with uv
+  (ROBOT_SETUP_GUIDE.md section 4).
+- Copy to the Pi and flash the HAT only from the Desktop folder on main
+  (ROBOT_SETUP_GUIDE.md section 1). The ChatGPT folder under ~/.codex
+  still has the old code.
+- After the first drive run, check the HAT firmware on the Pi:
+    grep -h session_ready ~/robot/logs/*.events.jsonl
+  firmware_build_id must be 1341153297 (0x4ff06011, the fixed firmware).
+  3213015933 means the old firmware is still on the HAT.
 
-REPOSITORY HOUSEKEEPING (needs your OK - removal was blocked for me)
-- releases/robot-v1-baseline.zip is a byte-identical copy of the
-  baseline/original-v1 branch and can be deleted.
-- CLEANUP.md only describes the local ChatGPT folder and can be deleted.
-- Leftover files in the local ChatGPT project folder (tmp/, output/,
-  __pycache__/) are safe to delete. KEEP motor_setup.py and ddsm115.py
-  (needed to set motor IDs).
+REPOSITORY HOUSEKEEPING
+- Done: removed the redundant baseline zip and CLEANUP.md. The original
+  pre-v2 code is the "baseline/original-v1" branch; keep it.
+- Done: ChatGPT folder leftovers (renders, caches, build scripts) are in
+  the Trash folder "robot-chatgpt-leftovers-2026-10-02". Empty the Trash
+  when you are sure. The HAT schematic, XR4 manual, plan PDFs and old
+  release records are in "Robot Code/reference".
+- KEEP motor_setup.py and ddsm115.py (needed to set motor IDs).
 - After the fast path passes hardware acceptance, the legacy drive can be
   deleted (Robot class in robot_main.py, config.legacy.example.json).
-- "main" now holds v2 plus the audit fixes. The original pre-v2 code is
-  the "baseline/original-v1" branch; keep it.

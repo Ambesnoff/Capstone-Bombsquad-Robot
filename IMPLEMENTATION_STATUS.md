@@ -1,6 +1,6 @@
 # Architecture implementation and verification
 
-This is the software implementation of the attached **Robot architecture & implementation plan, revision 1.1**. Development is isolated on `gpt/architecture-v2` in [Ambesnoff/Capstone-Bombsquad-Robot](https://github.com/Ambesnoff/Capstone-Bombsquad-Robot). Files retain their repository paths. Synced references and the Desktop Claude checkout are untouched. `main` contained a partial development upload before this task's Git work; it has not been advanced by this task. The exact original runtime is preserved on `baseline/original-v1` and in `releases/robot-v1-baseline.zip`.
+This is the software implementation of the attached **Robot architecture & implementation plan, revision 1.1**, in [Ambesnoff/Capstone-Bombsquad-Robot](https://github.com/Ambesnoff/Capstone-Bombsquad-Robot). It was developed on `gpt/architecture-v2`, audited and fixed in PR #2 (see `AUDIT.md`), and merged into `main` by PR #1. The exact original runtime is preserved on the `baseline/original-v1` branch.
 
 The fast example implements the user's updated requirements: **SB selects Gentle / Normal / Boost**, mapped to CH6 by the example EdgeTX mixes, and the **1.2 A ceiling is removed**. Profile caps are 800 / 1500 / 2500 mA, with a separate 2700 mA absolute ceiling. Current is a permitted envelope, not constant commanded current. Boost starts empty on an ESP32 reset and becomes available through the configured cool, fault-free refill policy. Protection or an exhausted budget can reduce the applied mode; the live view and logs explain that reduction.
 
@@ -23,7 +23,7 @@ The fast example implements the user's updated requirements: **SB selects Gentle
 | Nonblocking logs | Unique CSV + complete configuration/session metadata + events, bounded queue, visible dropped rows/events and storage errors; no disk operation on the command path; tests inject blocked and failed storage |
 | Improved simulator and shared contract checks | Actual firmware runs with independent continuous wheel physics, deterministic time, failing assertions and injected errors; fixed Python/C++ golden frames and full field-boundary/relationship agreement tests |
 | Independent motor-power stop | `INDEPENDENT_STOP.md` documents actual supplied schematic topology, separately fused computer branch, normally open DC contactor, latching stop and manual reset, backfeed checks and loss of powered holding |
-| Commissioning, qualification, and cleanup | `COMMISSIONING.md`, `tools/commissioning.py`, explicit unqualified trial template, setup/control/handoff instructions, `CLEANUP.md`; factory motor-ID tools retained |
+| Commissioning, qualification, and cleanup | `COMMISSIONING.md`, `tools/commissioning.py`, explicit unqualified trial template, setup/control/handoff instructions; factory motor-ID tools retained |
 
 ## Software verification
 
@@ -62,4 +62,4 @@ Stages 4–6 require physical measurements. They cannot be truthfully completed 
 - Record numerical acceptance criteria, load and surface; measure current/temperature peaks, repeated Boost cycles, stalls, connection/power faults and slopes. Normal and Boost require separate measured electrical/thermal acceptance.
 - Refine settings from those records, then qualify each hardware/configuration/load/surface combination. Retire legacy driving only after acceptance; keep `motor_setup.py` and `ddsm115.py` for factory motor-ID setup.
 
-No hardware record is marked qualified, no powered trial was performed, and no files were deleted. See `CLEANUP.md` for removable generated files and conditional legacy retirement.
+No hardware record is marked qualified and no powered trial was performed. Retire the legacy drive only after fast-path hardware acceptance, and keep `motor_setup.py` and `ddsm115.py` for factory motor-ID work.

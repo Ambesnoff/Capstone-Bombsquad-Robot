@@ -79,7 +79,7 @@ Mutation testing applied 26 single-point changes to firmware and Pi safety logic
 
 ## Needs your decision
 
-- Deleting `releases/robot-v1-baseline.zip` (byte-identical to `baseline/original-v1`) and `CLEANUP.md`. Deletion was blocked for the auditor.
+- Deleting `releases/robot-v1-baseline.zip` (byte-identical to `baseline/original-v1`) and `CLEANUP.md`. Deletion was blocked for the auditor; done after the merge.
 - Whether disarmed holding should be on by default (#10).
 - When to retire the legacy backend. The plan says after fast-path acceptance.
 - Adding a CI workflow that runs `tools/verify.py` on Python 3.14.8 with GCC. The repository has no CI today.

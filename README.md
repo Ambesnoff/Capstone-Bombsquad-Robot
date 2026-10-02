@@ -2,7 +2,7 @@
 
 The Raspberry Pi reads the XR4, supervises deliberate arming, mixes wheel targets, and records status. The Waveshare HAT's ESP32 controls the four DDSM115 wheels and independently enforces current profiles, Boost allowance, thermal protection, holding, command expiry, and stopping.
 
-Start with [ROBOT_SETUP_GUIDE.md](ROBOT_SETUP_GUIDE.md). The Python files and firmware keep their existing repository paths on **gpt/architecture-v2**; all ongoing edits use this separate Git checkout. `sources/` remains read-only. [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md) maps the architecture plan to delivered files and remaining physical acceptance work.
+Start with [ROBOT_SETUP_GUIDE.md](ROBOT_SETUP_GUIDE.md). `main` holds the v2 code with the audit fixes ([AUDIT.md](AUDIT.md)); start new work on a branch from `main`. [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md) maps the architecture plan to delivered files and remaining physical acceptance work.
 
 ## Controls
 
@@ -62,4 +62,4 @@ Pin Arduino-ESP32 to **3.3.12**, board **ESP32 Dev Module** (`esp32:esp32:esp32`
 
 Build and verify [INDEPENDENT_STOP.md](INDEPENDENT_STOP.md), then follow [COMMISSIONING.md](COMMISSIONING.md). The assembled robot still needs measured stopping, holding, timing, thermal/electrical, and load/terrain qualification. The 15 ms sweep is a timing target; expanded telemetry and motor turnaround must be measured.
 
-The original 44-test behavior is preserved in `releases/robot-v1-baseline.zip`. Release tooling exports this Git checkout as a source archive, manifest, and portable Git history. The separate `baseline/original-v1` branch preserves the original code. [CLEANUP.md](CLEANUP.md) identifies removable generated files. The legacy drive is retained until fast-path physical acceptance; **keep `motor_setup.py` and `ddsm115.py`** for factory motor-ID work.
+The original code and its 44-test behavior are preserved on the `baseline/original-v1` branch. Release tooling exports this Git checkout as a source archive, manifest, and portable Git history. The legacy drive is retained until fast-path physical acceptance; **keep `motor_setup.py` and `ddsm115.py`** for factory motor-ID work.

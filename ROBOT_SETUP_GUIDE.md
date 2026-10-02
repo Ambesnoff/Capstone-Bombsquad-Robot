@@ -17,10 +17,18 @@ This is the protocol v2 commissioning build. Software verification is recorded i
 In Finder, press **Command+Shift+G**, paste this path, then press Return:
 
 ~~~text
-/Users/ambesnoff/.codex/.chatgpt-projects/g-p-6abd17e11e9c81919d539f1e77cd6853/github/Capstone-Bombsquad-Robot
+/Users/ambesnoff/Desktop/Capstone/Robot Code/Capstone-Bombsquad-Robot
 ~~~
 
-**Command+Shift+.** toggles hidden files. This is a Git checkout on **gpt/architecture-v2**. Your repository's **main** is left unchanged. The Pi files are in that folder. The HAT sketch is **hat_firmware/robot_hat/robot_hat.ino**.
+This is a Git checkout of **main**. Bring it up to date in a Mac Terminal before you copy files to the Pi or flash the HAT:
+
+~~~sh
+cd "$HOME/Desktop/Capstone/Robot Code/Capstone-Bombsquad-Robot"
+git checkout main
+git pull
+~~~
+
+The Pi files are in that folder. The HAT sketch is **hat_firmware/robot_hat/robot_hat.ino**. Do not copy or flash from the older ChatGPT project folder under `~/.codex`; it still holds the code from before the audit fixes.
 
 You will need a microSD card and reader, the Mac and Pi on the same network, a USB-C **data** cable for the HAT, Arduino IDE 2, the Pocket's supplied antenna and 18650 cells, and both XR4 antennas.
 
@@ -80,7 +88,7 @@ The first check should show **/dev/ttyAMA0**; the second should find **/dev/ttyA
 Use a **Mac Terminal** window for this block. It copies runtime modules, factory motor-ID tools, the example config, and deployment files:
 
 ~~~sh
-ROBOT_PROJECT="$HOME/.codex/.chatgpt-projects/g-p-6abd17e11e9c81919d539f1e77cd6853/github/Capstone-Bombsquad-Robot"
+ROBOT_PROJECT="$HOME/Desktop/Capstone/Robot Code/Capstone-Bombsquad-Robot"
 ssh robot@robotpi.local 'mkdir -p ~/robot'
 scp "$ROBOT_PROJECT"/*.py "$ROBOT_PROJECT"/requirements.txt "$ROBOT_PROJECT"/config.example.json robot@robotpi.local:~/robot/
 scp -r "$ROBOT_PROJECT"/deploy robot@robotpi.local:~/robot/
@@ -90,11 +98,18 @@ In the **Pi's SSH terminal**, install the dependency in a Python virtual environ
 
 ~~~sh
 sudo apt update
-sudo apt install -y python3-venv
+sudo apt install -y python3-venv curl
 sudo usermod -aG dialout "$USER"
 ~~~
 
-Log out with **exit** and SSH back in so serial-port permission takes effect. Then:
+Raspberry Pi OS does not include Python 3.14. If `python3.14 --version` does not print **3.14.8**, install it with [uv](https://docs.astral.sh/uv/). It installs into your home folder and leaves the system Python alone:
+
+~~~sh
+curl -LsSf https://astral.sh/uv/install.sh | sh
+~/.local/bin/uv python install 3.14.8
+~~~
+
+Log out with **exit** and SSH back in so the serial-port permission and `python3.14` take effect. Then:
 
 ~~~sh
 cd ~/robot
@@ -216,7 +231,7 @@ python3 tools/release.py
 
 `tools/verify.py` runs both generator checks, both example-config checks, and the full test suite on every C++ compiler it finds (clang++, GNU GCC); any failure, error, or skip fails it. It requires Python **3.14.8**; `--allow-python-mismatch` is diagnostic only, not a full verification. Set `CXX` to pick one compiler, e.g. `CXX=g++-16 python3 -m unittest discover -s tests -v`. On macOS `g++` is Apple clang; GNU GCC is `g++-N`.
 
-The firmware source digest is reported as its build identity. The generated protocol definitions and firmware build header must match their sources. Release tooling records source hashes and the Git identity. The original pre-implementation code is preserved in `releases/robot-v1-baseline.zip`. Develop on a separate branch and merge into `main` through a reviewed pull request.
+The firmware source digest is reported as its build identity. The generated protocol definitions and firmware build header must match their sources. Release tooling records source hashes and the Git identity. The original pre-implementation code is preserved on the `baseline/original-v1` branch. Develop on a separate branch and merge into `main` through a reviewed pull request.
 
 ## Quick troubleshooting
 
