@@ -2,7 +2,7 @@
 
 The Raspberry Pi reads the XR4, supervises deliberate arming, mixes wheel targets, and records status. The Waveshare HAT's ESP32 controls the four DDSM115 wheels and independently enforces current profiles, Boost allowance, thermal protection, holding, command expiry, and stopping.
 
-Start with [ROBOT_SETUP_GUIDE.md](ROBOT_SETUP_GUIDE.md). The Python files and firmware keep their existing repository paths on **gpt/architecture-v2**; all ongoing edits use this separate Git checkout. `sources/` remains read-only. [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md) maps the architecture plan to delivered files and remaining physical acceptance work.
+Start with [ROBOT_SETUP_GUIDE.md](ROBOT_SETUP_GUIDE.md). `main` holds the v2 code with the audit fixes ([AUDIT.md](AUDIT.md)); start new work on a branch from `main`. [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md) maps the architecture plan to delivered files and remaining physical acceptance work.
 
 ## Controls
 
