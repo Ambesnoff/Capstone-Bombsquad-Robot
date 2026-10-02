@@ -74,6 +74,11 @@ class FrameParser:
         self.bad_length = 0
         self.discarded_bytes = 0
 
+    def reset(self) -> None:
+        """Drop any partial frame; the counters stay cumulative."""
+        self.discarded_bytes += len(self.buffer)
+        self.buffer.clear()
+
     def feed(self, data: bytes) -> list[Frame]:
         self.buffer.extend(data)
         result: list[Frame] = []
@@ -235,7 +240,9 @@ def decode_status(payload: bytes, received_at: float | None = None) -> FastStatu
             raise ValueError("Unknown wheel validity flags")
         temperature = raw["temp_c"] if valid & Validity.TEMPERATURE else None
         if temperature is not None and not -40 <= temperature <= 125:
-            raise ValueError("Invalid motor temperature")
+            # An implausible sensor value hides only this wheel's temperature;
+            # the HAT's own fault and reason flags in this STATUS stay visible.
+            temperature, valid = None, valid & ~Validity.TEMPERATURE
         if raw["effective_cap_ma"] > FIRMWARE_MAX_CURRENT_MA or raw["hold_cap_ma"] > FIRMWARE_MAX_CURRENT_MA:
             raise ValueError("Motor cap exceeds firmware hard ceiling")
         if abs(raw["target_centi_rpm"]) > 20000:
@@ -328,6 +335,7 @@ class FastStats:
     bad_status: int
     old_status: int
     discarded_bytes: int
+    backlog_discards: int
     last_rtt_ms: float | None
     max_rtt_ms: float | None
     mean_rtt_ms: float | None
@@ -411,6 +419,7 @@ class FastHat:
         self._max_status_interval_ms: float | None = None
         self._bad_status = 0
         self._old_status = 0
+        self._backlog_discards = 0
         try:
             # Data left by a prior host session must not count as live status.
             self.serial.reset_input_buffer()
@@ -425,12 +434,15 @@ class FastHat:
             try:
                 pending = int(getattr(self.serial, "in_waiting", 0) or 0)
                 if pending > MAX_STATUS_BACKLOG:
+                    # Reports queued while this reader was delayed are old: drop
+                    # them unread and keep reading. Motion requires a new ARM.
                     self.serial.reset_input_buffer()
                     with self._condition:
-                        self._reader_error = "HAT status backlog discarded"
+                        self._parser.reset()
+                        self._backlog_discards += 1
                         self._stop_flag.set()
                         self._condition.notify_all()
-                    return
+                    continue
                 waiting = max(1, pending)
                 chunk = self.serial.read(waiting)
             except Exception as exc:
@@ -706,7 +718,7 @@ class FastHat:
                 status_frames=self._status_frames, bad_crc=parser.bad_crc,
                 bad_version=parser.bad_version, bad_length=parser.bad_length,
                 bad_status=self._bad_status, old_status=self._old_status,
-                discarded_bytes=parser.discarded_bytes,
+                discarded_bytes=parser.discarded_bytes, backlog_discards=self._backlog_discards,
                 last_rtt_ms=self._last_rtt_ms, max_rtt_ms=self._max_rtt_ms,
                 mean_rtt_ms=(self._rtt_sum_ms / self._rtt_count if self._rtt_count else None),
                 last_status_interval_ms=self._last_status_interval_ms,

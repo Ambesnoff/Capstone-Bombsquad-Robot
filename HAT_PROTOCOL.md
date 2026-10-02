@@ -36,8 +36,8 @@ A command is newer only when `0 < uint16(candidate - boundary) < 32768`.
 Duplicate, old and exactly half-range sequences cannot refresh the command
 watchdog. STATUS has its own sequence; old or duplicated STATUS cannot refresh
 Pi feedback timestamps. Both sides clear serial input on startup. The host
-refuses an excessive receive backlog instead of presenting old buffered reports
-as live measurements.
+discards an excessive receive backlog instead of presenting old buffered reports
+as live measurements, then keeps receiving; motion requires a new ARM.
 
 ## Boot and session identities
 

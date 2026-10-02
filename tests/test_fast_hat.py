@@ -15,7 +15,7 @@ from fast_hat import (
 )
 from protocol_defs import (
     CONFIG_PREFIX, CONFIG_STRUCT, FaultCode, STATUS_HEADER_FIELDS, STATUS_HEADER_STRUCT,
-    STATUS_LENGTH, TARGETS_STRUCT, WHEEL_FIELDS, WHEEL_STRUCT,
+    STATUS_LENGTH, TARGETS_STRUCT, WHEEL_FIELDS, WHEEL_OFFSETS, WHEEL_STRUCT,
 )
 
 
@@ -186,9 +186,23 @@ class FrameTests(unittest.TestCase):
         for changes in (dict(state=99), dict(fault=255), dict(stop_state=99),
                         dict(requested_profile=3), dict(boost_remaining_ms=21000),
                         dict(fault_wheel=5), dict(wheel_overrides=dict(effective_cap_ma=2701)),
-                        dict(wheel_overrides=dict(validity=16)), dict(wheel_overrides=dict(temp_c=200))):
+                        dict(wheel_overrides=dict(validity=16))):
             with self.subTest(changes=changes), self.assertRaises(ValueError):
                 decode_status(status_payload(**changes))
+
+    def test_implausible_temperature_hides_only_that_wheel(self):
+        # One faulty or cold-encoded sensor byte must not hide HAT fault/reason flags.
+        for value in (251, -41):
+            with self.subTest(temp_c=value):
+                raw = bytearray(status_payload(9, HatState.FAULT, fault=FaultCode.OVERTEMPERATURE,
+                                               fault_wheel=2, reason_flags=Reason.THERMAL_STOP))
+                struct.pack_into('<h', raw, STATUS_HEADER_STRUCT.size + WHEEL_STRUCT.size + WHEEL_OFFSETS['temp_c'], value)
+                s = decode_status(bytes(raw))
+                self.assertEqual((s.fault_code, s.fault_wheel, s.reason_flags), (FaultCode.OVERTEMPERATURE, 2, Reason.THERMAL_STOP))
+                self.assertIsNone(s.wheels[1].temp_c)
+                self.assertEqual(s.wheels[1].validity, Validity.RPM | Validity.CURRENT | Validity.POSITION)
+                self.assertEqual([w.temp_c for w in s.wheels], [25, None, 25, 25])
+                self.assertTrue(s.feedback_fresh(150)); self.assertFalse(s.temperature_fresh(1500))
 
 
 class ConfigTests(unittest.TestCase):
@@ -358,20 +372,32 @@ class FastHatTests(unittest.TestCase):
             self.assertEqual(hat.wait_ack(seq).ack_seq,seq)
             self.assertEqual(hat.stats().bad_crc,1)
 
-    def test_reader_error_and_backlog_still_allow_best_effort_stop(self):
-        for backlog in (False,True):
-            class Backlog(FakeSerial):
-                overfull=False
-                @property
-                def in_waiting(self):return MAX_STATUS_BACKLOG+1 if self.overfull else super().in_waiting
-            fake=Backlog()
-            with FastHat('test',timeout=.1,serial_port=fake) as hat:
-                if backlog:fake.overfull=True
-                else:fake.read_error=True;fake.inject(b'x')
-                wait_for(lambda:hat.stats().reader_error is not None)
-                with self.assertRaises(FastHatError):hat.hello()
-                seq=hat.stop()
-                self.assertEqual(FrameParser().feed(fake.writes[-1])[0].sequence,seq)
+    def test_reader_error_still_allows_best_effort_stop(self):
+        fake=FakeSerial()
+        with FastHat('test',timeout=.1,serial_port=fake) as hat:
+            fake.read_error=True;fake.inject(b'x')
+            wait_for(lambda:hat.stats().reader_error is not None)
+            with self.assertRaises(FastHatError):hat.hello()
+            seq=hat.stop()
+            self.assertEqual(FrameParser().feed(fake.writes[-1])[0].sequence,seq)
+
+    def test_receive_backlog_is_discarded_and_reader_keeps_running(self):
+        fake=FakeSerial(auto_ack=True)
+        with FastHat('test',timeout=.2,serial_port=fake) as hat:
+            ready(hat);hat.wait_ack(hat.arm());live=hat.snapshot()
+            # Reports queued while the reader was delayed are old; none may become live.
+            arm=FrameParser().feed(fake.writes[-1])[0]
+            backlog=b''.join(fake.response(arm,inject=False) for _ in range(5))
+            self.assertGreater(len(backlog),MAX_STATUS_BACKLOG)
+            fake.inject(backlog)
+            wait_for(lambda:hat.stats().backlog_discards==1)
+            self.assertIs(hat.snapshot(),live)
+            self.assertIsNone(hat.stats().reader_error);self.assertTrue(hat._reader.is_alive())
+            with self.assertRaisesRegex(FastHatError,'ARM must be acknowledged'):
+                hat.targets((1,1,1,1),Profile.GENTLE)
+            # Fresh reports still arrive; a new ARM is required before TARGETS.
+            self.assertGreater(hat.wait_ack(hat.request_status()).received_at,live.received_at)
+            hat.wait_ack(hat.arm());hat.wait_ack(hat.targets((1,1,1,1),Profile.GENTLE))
 
     def test_nonfinite_targets_and_invalid_profile_rejected(self):
         fake=FakeSerial(auto_ack=True)
