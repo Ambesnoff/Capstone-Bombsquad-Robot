@@ -37,4 +37,4 @@ Record whether computer power survives, whether stop feedback remains available,
 
 Motor-power removal eliminates powered holding. A robot that must remain parked on a slope during power loss needs a separately qualified mechanical brake or retention method.
 
-Reference: supplied `tmp/pdfs/hat_schematic.pdf` (retain an official schematic copy with the hardware record), [Waveshare HAT documentation](https://www.waveshare.com/wiki/DDSM_Driver_HAT_%28A%29), [DDSM115 feedback definitions](https://www.waveshare.com/wiki/DDSM115), and [Espressif watchdog reset behavior](https://docs.espressif.com/projects/esp-idf/en/v5.5/esp32/api-reference/system/wdts.html).
+Reference: the supplied HAT schematic, kept outside the repository at `Robot Code/reference/tmp-pdfs/hat_schematic.pdf` on the project Mac (retain an official schematic copy with the hardware record), [Waveshare HAT documentation](https://www.waveshare.com/wiki/DDSM_Driver_HAT_%28A%29), [DDSM115 feedback definitions](https://www.waveshare.com/wiki/DDSM115), and [Espressif watchdog reset behavior](https://docs.espressif.com/projects/esp-idf/en/v5.5/esp32/api-reference/system/wdts.html).
