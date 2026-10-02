@@ -62,6 +62,7 @@ class Reason(IntFlag):
     CONFIG_REJECTED = 16384
     SESSION_MISMATCH = 32768
     SPEED_ERROR = 65536
+    INSPECTION_REQUIRED = 131072
 
 class Capability(IntFlag):
     PROFILES = 1

@@ -251,6 +251,7 @@ Reason bit masks are:
 | 14 | 16384 | Configuration rejected |
 | 15 | 32768 | Session mismatch |
 | 16 | 65536 | Persistent speed error |
+| 17 | 131072 | Inspection required; fault latched until ESP32 reset |
 
 Capability bits are profiles 1, sessions 2, holding 4, independent temperature
 age 8, stop confirmation 16, config identity 32, reset watchdog 64, position 128.
