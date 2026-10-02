@@ -4,10 +4,10 @@ The native harness asserts safety/state outcomes and exits nonzero on failure.
 It is software evidence; its mechanics and heating are not hardware calibration.
 """
 from pathlib import Path
-import shutil
 import subprocess
-import tempfile
 import unittest
+try:from native_toolchain import STRICT,build_native
+except ImportError:from tests.native_toolchain import STRICT,build_native
 ROOT=Path(__file__).resolve().parents[1]
 CASES=("ramp","physics","boot_modes","arm_mode_failure","faulted_stop_polling",
        "combined_motor_fault","stop_motor_fault","command_reply_motor_fault",
@@ -18,14 +18,7 @@ CASES=("ramp","physics","boot_modes","arm_mode_failure","faulted_stop_polling",
 class HatFirmwareNativeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        compiler=shutil.which('g++') or shutil.which('clang++')
-        if not compiler:raise unittest.SkipTest('No native C++ compiler')
-        cls.directory=tempfile.TemporaryDirectory();cls.binary=Path(cls.directory.name)/'robot-sil'
-        subprocess.run([compiler,'-std=c++17','-Wall','-Wextra','-Werror','-Wno-misleading-indentation',
-                        '-I',str(ROOT/'tests/sil'),'-I',str(ROOT),str(ROOT/'tests/sil/main.cpp'),
-                        '-o',str(cls.binary)],check=True,capture_output=True,text=True)
-    @classmethod
-    def tearDownClass(cls):cls.directory.cleanup()
+        cls.binary=build_native(cls,ROOT/'tests/sil/main.cpp','robot-sil',*STRICT,'-I',str(ROOT/'tests/sil'))
     def test_deterministic_fault_scenarios(self):
         for scenario in CASES:
             with self.subTest(scenario=scenario):

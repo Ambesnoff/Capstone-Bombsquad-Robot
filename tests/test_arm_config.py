@@ -1,10 +1,12 @@
 """Exercise ARM/config interleavings through the real parser and firmware loop."""
 from pathlib import Path
-import shutil
 import subprocess
-import tempfile
 import unittest
 
+try:
+    from native_toolchain import STRICT, build_native
+except ImportError:
+    from tests.native_toolchain import STRICT, build_native
 
 ROOT = Path(__file__).resolve().parents[1]
 CASES = (
@@ -16,22 +18,8 @@ CASES = (
 class ArmConfigTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        compiler = shutil.which("g++") or shutil.which("clang++")
-        if not compiler:
-            raise unittest.SkipTest("No native C++ compiler")
-        cls.directory = tempfile.TemporaryDirectory()
-        cls.binary = Path(cls.directory.name) / "robot-arm-config-sil"
-        subprocess.run(
-            [compiler, "-std=c++17", "-Wall", "-Wextra", "-Werror",
-             "-Wno-misleading-indentation", "-I", str(ROOT / "tests/sil"),
-             "-I", str(ROOT), str(ROOT / "tests/sil/arm_config.cpp"),
-             "-o", str(cls.binary)],
-            check=True, capture_output=True, text=True,
-        )
-
-    @classmethod
-    def tearDownClass(cls):
-        cls.directory.cleanup()
+        cls.binary = build_native(cls, ROOT / "tests/sil/arm_config.cpp", "robot-arm-config-sil",
+                                  *STRICT, "-I", str(ROOT / "tests/sil"))
 
     def test_arm_interleavings(self):
         for scenario in CASES:
