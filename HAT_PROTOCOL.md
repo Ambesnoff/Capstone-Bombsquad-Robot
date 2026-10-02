@@ -14,8 +14,9 @@ All integers are little endian. The packed wire definitions are generated from
 `robot_protocol.json` into `protocol_defs.py` and
 `hat_firmware/robot_hat/protocol_v2.h`. Update the schema, run
 `python3 generate_protocol.py`, and verify `python3 generate_protocol.py --check`.
-The generator produces field offsets, size assertions and identical Python/C++
-configuration range and relationship validators.
+The generator produces field offsets, size assertions and equivalent Python/C++
+configuration range and relationship validators (the C++ one omits bounds its
+wire type already guarantees, which GNU GCC rejects under `-Werror`).
 
 | Field | Bytes | Value |
 |---|---:|---|
@@ -36,8 +37,8 @@ A command is newer only when `0 < uint16(candidate - boundary) < 32768`.
 Duplicate, old and exactly half-range sequences cannot refresh the command
 watchdog. STATUS has its own sequence; old or duplicated STATUS cannot refresh
 Pi feedback timestamps. Both sides clear serial input on startup. The host
-refuses an excessive receive backlog instead of presenting old buffered reports
-as live measurements.
+discards an excessive receive backlog instead of presenting old buffered reports
+as live measurements, then keeps receiving; motion requires a new ARM.
 
 ## Boot and session identities
 
@@ -131,9 +132,11 @@ CONFIG starts with the following 35 unsigned 16-bit fields in order:
 Then nine unsigned byte fields follow: `temp_warn_c=50`, `temp_derate_c=55`,
 `temp_limit_c=65` (thermal stop), `temp_release_c=45`, `temp_hysteresis_c=3`,
 `hold_enabled=1`, `disarmed_hold_enabled=0`, `stall_enabled=1`, `hold_temp_c=55`.
-The final field is unsigned 32-bit `encoder_counts_per_rev=65536`, at body offset
-79. Its allowed range is 256–65536. This is an explicit sensor scaling assumption
-to verify on the assembled motors before tuning position holding.
+The final field is unsigned 32-bit `encoder_counts_per_rev=32768`, at body offset
+79. Its allowed range is 256–65536. The default follows Waveshare's documented
+DDSM115 position feedback (0–32767 per turn). A wrong value makes every wrap look
+like a half-turn error, so holding drives the wheel; verify it on the assembled
+motors (one raised-wheel turn) before tuning position holding.
 
 Ranges and cross-field constraints are authoritative in `robot_protocol.json`.
 Among them: profile caps must be ascending; holding and braking cannot exceed
@@ -224,6 +227,8 @@ confirm the stop.
 CONFIG results are `0=NONE`, `1=APPLIED`, `2=REJECTED_STATE`,
 `3=REJECTED_VALUE`, `4=REJECTED_SESSION`. Rejection reports config_ack_seq and
 never advances the accepted motion sequence or changes loaded config identity.
+config_result and config_ack_seq change only for CONFIG frames; rejected motion
+frames and old-sequence CONFIG frames leave them unchanged.
 
 Fault codes are `0=none`, `1=command expiry`, `2=motor timeout`,
 `3=invalid motor frame`, `4=motor error`, `5=overspeed`, `6=overtemperature`,
@@ -251,6 +256,7 @@ Reason bit masks are:
 | 14 | 16384 | Configuration rejected |
 | 15 | 32768 | Session mismatch |
 | 16 | 65536 | Persistent speed error |
+| 17 | 131072 | Inspection required; fault latched until ESP32 reset |
 
 Capability bits are profiles 1, sessions 2, holding 4, independent temperature
 age 8, stop confirmation 16, config identity 32, reset watchdog 64, position 128.
@@ -275,13 +281,17 @@ and wheel observations. Firmware queries unknown wheel
 modes before sending zero, switches to speed mode and verifies it before speed
 zero. A zero setpoint in unknown/position mode is never assumed safe. Fresh
 stationary reports from all four IDs confirm stopping; a transmitted command,
-radio frame or motor mode write alone cannot prove it. The host separately
+radio frame or motor mode write alone cannot prove it. A confirmed stop that is
+later disturbed (for example a pushed wheel) starts a new `stop_verify_ms`
+window; motion that persists past it latches an inspection fault naming the
+wheel. The host separately
 invalidates pending ARM writes and late ARM acknowledgments when STOP begins.
 
 Overtemperature, required feedback loss, motor errors, command expiry, persistent
-stall and abnormal current inhibit motion automatically. Thermal recovery
-requires the configured release condition/cooldown plus deliberate rearm; stale
-targets are discarded. The firmware progress watchdog covers a wedged control
+stall and abnormal current inhibit motion automatically. Recoverable faults
+clear after a confirmed stop plus `cooldown_ms` of fresh healthy feedback; only
+overtemperature additionally waits for every motor to reach `temp_release_c`.
+Each recovery still requires a deliberate rearm; stale targets are discarded. The firmware progress watchdog covers a wedged control
 path. Independent motor-power removal remains a hardware safety requirement;
 software cannot provide powered holding after power removal.
 

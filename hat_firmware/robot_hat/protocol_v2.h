@@ -61,6 +61,7 @@ enum class Reason : uint32_t {
   CONFIG_REJECTED = 16384,
   SESSION_MISMATCH = 32768,
   SPEED_ERROR = 65536,
+  INSPECTION_REQUIRED = 131072,
 };
 enum class Capability : uint32_t {
   PROFILES = 1,
@@ -336,18 +337,19 @@ inline Config defaultConfig() {
     0, // disarmed_hold_enabled
     1, // stall_enabled
     55, // hold_temp_c
-    65536, // encoder_counts_per_rev
+    32768, // encoder_counts_per_rev
   };
 }
 inline bool validConfig(const Config &c) {
+  // Bounds already guaranteed by a field's C type are omitted (GCC -Wtype-limits).
   if (c.max_rpm < 1 || c.max_rpm > 200) return false;
   if (c.max_current_ma < 1 || c.max_current_ma > 2700) return false;
-  if (c.neutral_brake_ma < 0 || c.neutral_brake_ma > 2700) return false;
+  if (c.neutral_brake_ma > 2700) return false;
   if (c.accel_rpm_s < 1 || c.accel_rpm_s > 5000) return false;
   if (c.decel_rpm_s < 1 || c.decel_rpm_s > 5000) return false;
-  if (c.kp_ma_per_rpm < 0 || c.kp_ma_per_rpm > 1000) return false;
-  if (c.ki_ma_per_rpm_s < 0 || c.ki_ma_per_rpm_s > 1000) return false;
-  if (c.ff_ma_per_rpm_s < 0 || c.ff_ma_per_rpm_s > 1000) return false;
+  if (c.kp_ma_per_rpm > 1000) return false;
+  if (c.ki_ma_per_rpm_s > 1000) return false;
+  if (c.ff_ma_per_rpm_s > 1000) return false;
   if (c.watchdog_ms < 100 || c.watchdog_ms > 1000) return false;
   if (c.control_period_ms < 10 || c.control_period_ms > 100) return false;
   if (c.stall_time_ms < 100 || c.stall_time_ms > 5000) return false;
@@ -355,24 +357,24 @@ inline bool validConfig(const Config &c) {
   if (c.normal_current_ma < 1 || c.normal_current_ma > 2700) return false;
   if (c.boost_current_ma < 1 || c.boost_current_ma > 2700) return false;
   if (c.boost_capacity_ms < 1000 || c.boost_capacity_ms > 20000) return false;
-  if (c.boost_refill_ms < 60000 || c.boost_refill_ms > 65535) return false;
+  if (c.boost_refill_ms < 60000) return false;
   if (c.temp_poll_ms < 100 || c.temp_poll_ms > 500) return false;
   if (c.temp_boost_stale_ms < 100 || c.temp_boost_stale_ms > 750) return false;
   if (c.temp_stop_stale_ms < 200 || c.temp_stop_stale_ms > 1500) return false;
   if (c.cooldown_ms < 1000 || c.cooldown_ms > 60000) return false;
   if (c.cap_ramp_ma_s < 1 || c.cap_ramp_ma_s > 10000) return false;
-  if (c.hold_current_ma < 0 || c.hold_current_ma > 2700) return false;
-  if (c.hold_kp_ma_per_degree < 0 || c.hold_kp_ma_per_degree > 1000) return false;
-  if (c.hold_ki_ma_per_degree_s < 0 || c.hold_ki_ma_per_degree_s > 1000) return false;
-  if (c.hold_damping_ma_per_rpm < 0 || c.hold_damping_ma_per_rpm > 1000) return false;
+  if (c.hold_current_ma > 2700) return false;
+  if (c.hold_kp_ma_per_degree > 1000) return false;
+  if (c.hold_ki_ma_per_degree_s > 1000) return false;
+  if (c.hold_damping_ma_per_rpm > 1000) return false;
   if (c.neutral_settle_ms < 100 || c.neutral_settle_ms > 5000) return false;
   if (c.feedback_timeout_ms < 100 || c.feedback_timeout_ms > 250) return false;
   if (c.stall_target_centi_rpm < 100 || c.stall_target_centi_rpm > 20000) return false;
-  if (c.stall_speed_centi_rpm < 0 || c.stall_speed_centi_rpm > 20000) return false;
+  if (c.stall_speed_centi_rpm > 20000) return false;
   if (c.stall_current_ma < 1 || c.stall_current_ma > 2700) return false;
   if (c.abnormal_current_ma < 1 || c.abnormal_current_ma > 2700) return false;
   if (c.abnormal_current_ms < 50 || c.abnormal_current_ms > 2000) return false;
-  if (c.abnormal_margin_ma < 0 || c.abnormal_margin_ma > 1000) return false;
+  if (c.abnormal_margin_ma > 1000) return false;
   if (c.saturation_warn_ms < 100 || c.saturation_warn_ms > 5000) return false;
   if (c.stop_verify_ms < 100 || c.stop_verify_ms > 5000) return false;
   if (c.temp_warn_c < 30 || c.temp_warn_c > 60) return false;
@@ -380,9 +382,9 @@ inline bool validConfig(const Config &c) {
   if (c.temp_limit_c < 40 || c.temp_limit_c > 70) return false;
   if (c.temp_release_c < 20 || c.temp_release_c > 60) return false;
   if (c.temp_hysteresis_c < 1 || c.temp_hysteresis_c > 10) return false;
-  if (c.hold_enabled < 0 || c.hold_enabled > 1) return false;
-  if (c.disarmed_hold_enabled < 0 || c.disarmed_hold_enabled > 1) return false;
-  if (c.stall_enabled < 0 || c.stall_enabled > 1) return false;
+  if (c.hold_enabled > 1) return false;
+  if (c.disarmed_hold_enabled > 1) return false;
+  if (c.stall_enabled > 1) return false;
   if (c.hold_temp_c < 30 || c.hold_temp_c > 65) return false;
   if (c.encoder_counts_per_rev < 256 || c.encoder_counts_per_rev > 65536) return false;
   if (!(c.gentle_current_ma <= c.normal_current_ma && c.normal_current_ma <= c.boost_current_ma)) return false;

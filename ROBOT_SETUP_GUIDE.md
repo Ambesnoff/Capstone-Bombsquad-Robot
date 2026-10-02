@@ -98,13 +98,14 @@ Log out with **exit** and SSH back in so serial-port permission takes effect. Th
 
 ~~~sh
 cd ~/robot
-python3 -m venv .venv
+python3.14 -m venv .venv
+./.venv/bin/python --version
 ./.venv/bin/python -m pip install -r requirements.txt
 cp config.example.json config.json
 ./.venv/bin/python robot_main.py check --config config.json
 ~~~
 
-The last line should report **fast** mode, wheel IDs **1–4**, motor port **/dev/serial0**, and radio port **/dev/ttyAMA5**. This is a config check only; it does not communicate with hardware. The virtual environment avoids current Raspberry Pi OS restrictions on system-wide pip installs. [Pi OS Python guidance](https://www.raspberrypi.com/documentation/computers/os.html).
+The robot requires Python **3.14.8**; `--version` must print it, so create the virtual environment with `python3.14`. The last line of the check should report **fast** mode, wheel IDs **1–4**, motor port **/dev/serial0**, and radio port **/dev/ttyAMA5**. This is a config check only; it does not communicate with hardware. The virtual environment avoids current Raspberry Pi OS restrictions on system-wide pip installs. [Pi OS Python guidance](https://www.raspberrypi.com/documentation/computers/os.html).
 
 ## 5. Configure the Pocket controller
 
@@ -206,16 +207,16 @@ The wrapper permits at most five process starts with 2/4/8/16-second backoff; fa
 ## 11. Reproduce the software release
 
 ~~~sh
-python3 -m unittest discover -s tests -v
-python3 generate_protocol.py --check
-python3 hat_firmware/generate_build_identity.py --check
+python3 tools/verify.py
 arduino-cli core update-index --additional-urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
 arduino-cli core install esp32:esp32@3.3.12 --additional-urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
 arduino-cli compile --fqbn esp32:esp32:esp32 hat_firmware/robot_hat
 python3 tools/release.py
 ~~~
 
-The firmware source digest is reported as its build identity. The generated protocol definitions and firmware build header must match their sources. Release tooling records source hashes and the Git identity. The original pre-implementation code is preserved in `releases/robot-v1-baseline.zip`. Develop on `gpt/architecture-v2`; leave your other branch/checkout unchanged until you deliberately merge or cherry-pick the changes.
+`tools/verify.py` runs both generator checks, both example-config checks, and the full test suite on every C++ compiler it finds (clang++, GNU GCC); any failure, error, or skip fails it. It requires Python **3.14.8**; `--allow-python-mismatch` is diagnostic only, not a full verification. Set `CXX` to pick one compiler, e.g. `CXX=g++-16 python3 -m unittest discover -s tests -v`. On macOS `g++` is Apple clang; GNU GCC is `g++-N`.
+
+The firmware source digest is reported as its build identity. The generated protocol definitions and firmware build header must match their sources. Release tooling records source hashes and the Git identity. The original pre-implementation code is preserved in `releases/robot-v1-baseline.zip`. Develop on a separate branch and merge into `main` through a reviewed pull request.
 
 ## Quick troubleshooting
 

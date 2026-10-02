@@ -12,8 +12,8 @@ from unittest.mock import patch
 
 from crsf import CRSFSnapshot
 from fast_hat import FastHatError, FastStatus, FastWheel, REQUIRED_CAPABILITIES
-from fast_robot import AsyncCsvTelemetry, FastRobot, fast_config
-from protocol_defs import ConfigResult, FaultCode, HatState, Profile, StopState
+from fast_robot import AsyncCsvTelemetry, FastRobot, OperatorStop, _telemetry_header, fast_config
+from protocol_defs import ConfigResult, FaultCode, HatState, Profile, Reason, StopState
 from robot_main import Settings
 
 CONFIG = Path(__file__).resolve().parents[1] / "config.example.json"
@@ -42,7 +42,7 @@ class FakeFastHat:
         self.commands=[];self.sequence=0;self.state=HatState.DISARMED;self.fault=0;self.stop_state=StopState.CONFIRMED
         self.ages=(0,0,0,0);self.temps=(25,25,25,25);self.closed=False;self.config=None
         self.profile=Profile.GENTLE;self.targets_rpm=(0,0,0,0);self.boot=123;self.session=456
-        self.capabilities=REQUIRED_CAPABILITIES;self.on_wait=None;self.queries=0
+        self.capabilities=REQUIRED_CAPABILITIES;self.on_wait=None;self.queries=0;self.reasons=0;self.fault_wheel=0
     def __enter__(self): return self
     def __exit__(self,*_args): self.closed=True
     def _send(self,name,*values): self.sequence+=1;self.commands.append((name,*values));return self.sequence
@@ -69,8 +69,29 @@ class FakeFastHat:
                           config_id=self.config.configuration_id if self.config else 0,
                           config_result=ConfigResult.APPLIED if self.config else ConfigResult.NONE,
                           stop_state=self.stop_state,requested_profile=self.profile,applied_profile=self.profile,
-                          boost_capacity_ms=20000)
+                          boost_capacity_ms=20000,reason_flags=Reason(self.reasons),fault_wheel=self.fault_wheel)
     def stats(self): return SimpleNamespace(last_rtt_ms=4,max_rtt_ms=5,last_status_interval_ms=20,reader_error=None)
+
+
+class RecoveringHat(FakeFastHat):
+    """Faulted after a confirmed stop; the HAT clears a recoverable fault by itself."""
+    def __init__(self,fault=FaultCode.COMMAND_TIMEOUT,wheel=0,on_query=None):
+        super().__init__();self.fault=fault;self.fault_wheel=wheel;self.state=HatState.FAULT
+        self.on_query=on_query;self.stale=False
+    def hello(self):
+        seq=super().hello();self.stale=False;self.state=HatState.FAULT if self.fault else HatState.DISARMED
+        return seq
+    def send_config(self,config):
+        if self.fault: raise FastHatError("HAT rejected CONFIG (REJECTED_STATE)")
+        return super().send_config(config)
+    def request_status(self):
+        seq=super().request_status()
+        if self.on_query: self.on_query(self)
+        return seq
+    def recover(self): self.fault=0;self.fault_wheel=0;self.state=HatState.DISARMED
+    def snapshot(self):
+        status=super().snapshot()
+        return replace(status,received_at=status.received_at-1) if self.stale else status
 
 
 class FastRobotTests(unittest.TestCase):
@@ -199,6 +220,86 @@ class FastRobotTests(unittest.TestCase):
         self.assertIsNone(robot._inhibit_reason(hat.snapshot()))
         self.assertNotEqual(robot.gate.observe(radio_frame(arm=1811),time.monotonic()),"newly_armed")
 
+    def test_hat_inspection_latch_is_named_and_sticky_after_recoverable_first_cause(self):
+        robot=FastRobot(settings(),PhaseRadio([{}]),telemetry_path=Path("unused.csv"),live_status=False)
+        hat=FakeFastHat();hat.fault=FaultCode.COMMAND_TIMEOUT;hat.fault_wheel=3;hat.state=HatState.FAULT
+        hat.reasons=Reason.COMMAND_TIMEOUT|Reason.INSPECTION_REQUIRED
+        reason=robot._inhibit_reason(hat.snapshot())
+        self.assertEqual(robot._inspection_fault,reason)
+        self.assertRegex(reason,"HAT fault 1 wheel 3.*inspection.*reset")
+        hat.fault=0;hat.fault_wheel=0;hat.reasons=0;hat.state=HatState.DISARMED
+        self.assertEqual(robot._inhibit_reason(hat.snapshot()),reason)
+
+    def test_unconfirmed_stop_inhibits_without_process_lifetime_latch(self):
+        # The HAT escalates an unresolved stop itself; one sampled UNCONFIRMED
+        # report must not decide whether a later HAT recovery restores readiness.
+        robot=FastRobot(settings(),PhaseRadio([{}]),telemetry_path=Path("unused.csv"),live_status=False)
+        hat=FakeFastHat();hat.fault=FaultCode.MOTOR_TIMEOUT;hat.fault_wheel=2;hat.state=HatState.FAULT
+        hat.stop_state=StopState.UNCONFIRMED
+        self.assertRegex(robot._inhibit_reason(hat.snapshot()),"^STOP UNCONFIRMED: .*fault 2 wheel 2")
+        self.assertIsNone(robot._inspection_fault)
+        hat.stop_state=StopState.CONFIRMED;hat.fault=0;hat.fault_wheel=0;hat.state=HatState.DISARMED
+        self.assertIsNone(robot._inhibit_reason(hat.snapshot()))
+
+    def test_stale_status_at_end_of_pass_inhibits_instead_of_ending_run(self):
+        hat=FakeFastHat();stale=[];fresh=hat.snapshot
+        def snapshot():
+            status=fresh()
+            return replace(status,received_at=status.received_at-1) if stale and stale.pop() else status
+        def targets(rpm,profile):
+            stale.extend((1,1))  # this pass's final read and the next pass's check are stale
+            return FakeFastHat.targets(hat,rpm,profile)
+        hat.snapshot,hat.targets=snapshot,targets
+        self.run_phases([{"arm":172},{"arm":1811}]+[{"arm":1811,"throttle":1811}]*3,hat)
+        kinds=[c[0] for c in hat.commands];sent=kinds.index("targets")
+        self.assertEqual(kinds[sent+1:sent+3],["stop","hello"])
+        self.assertEqual(kinds.count("targets"),1)
+
+    def test_csv_enum_and_flag_fields_are_plain_integers(self):
+        # csv.writer str()s each value; enum members print names before Python 3.11.
+        hat=FakeFastHat();hat.fault=FaultCode.OVERTEMPERATURE;hat.fault_wheel=3;hat.state=HatState.FAULT
+        hat.reasons=Reason.THERMAL_STOP
+        robot=FastRobot(settings(),PhaseRadio([{}]),telemetry_path=Path("unused.csv"),live_status=False);robot._hat=hat
+        status=hat.snapshot()
+        status=replace(status,wheels=tuple(replace(w,reason_flags=Reason.THERMAL_STOP|Reason.COOLDOWN) for w in status.wheels))
+        with tempfile.TemporaryDirectory() as tmp:
+            robot._telemetry=AsyncCsvTelemetry(Path(tmp)/"unused.csv")
+            robot._record(status,radio_frame())
+            queued=[robot._telemetry._rows.get_nowait() for _ in range(robot._telemetry.queue_depth())]
+        row=next(data for kind,data in queued if kind=="row");fields=dict(zip(_telemetry_header(),row))
+        for name in ["hat_fault","hold_flags","reason_flags"]+[f"{kind}_{mid}" for kind in ("validity","wheel_reason_flags") for mid in range(1,5)]:
+            self.assertIs(type(fields[name]),int,name)
+        self.assertEqual((fields["hat_fault"],fields["validity_2"],fields["wheel_reason_flags_4"]),(6,15,8224))
+        self.assertEqual([v for v in row if type(v) not in (int,float,str,bool,type(None))],[])
+
+    def test_shutdown_in_armed_path_writes_no_later_targets(self):
+        for hook in ("after_radio_check","pending_targets"):
+            with self.subTest(hook=hook),tempfile.TemporaryDirectory() as tmp:
+                hat=FakeFastHat();phases=[{"arm":172},{"arm":1811},{"arm":1811,"throttle":1811}];radio=PhaseRadio(phases)
+                robot=FastRobot(settings(),radio,telemetry_path=Path(tmp)/"data.csv",live_status=False)
+                verify=robot._verify_radio
+                def verified(*,neutral=False):
+                    request=verify(neutral=neutral)
+                    if hook=="after_radio_check" and not neutral: robot.request_shutdown()
+                    return request
+                def pending_targets(rpm,profile):
+                    robot.request_shutdown()  # delivered while this frame's write is pending
+                    return FakeFastHat.targets(hat,rpm,profile)
+                if hook=="pending_targets": hat.targets=pending_targets
+                def advance(_):
+                    hat.commands.append(("sleep",))
+                    if radio.index<len(phases)-1: radio.index+=1
+                    elif len(hat.commands)>50: robot.request_shutdown()
+                with patch("fast_robot.FastHat",return_value=hat),patch.object(robot,"_verify_radio",side_effect=verified), \
+                        patch("fast_robot.time.sleep",side_effect=advance): robot.run()
+                kinds=[c[0] for c in hat.commands]
+                if hook=="after_radio_check":
+                    self.assertNotIn("targets",kinds)
+                else:
+                    # The in-flight frame cannot be recalled; STOP follows in the same pass.
+                    self.assertEqual(kinds.count("targets"),1)
+                    self.assertEqual(kinds[kinds.index("targets")+1],"stop")
+
 
 if __name__=="__main__": unittest.main()
 
@@ -297,6 +398,30 @@ class StopBoundaryTests(unittest.TestCase):
         # Only final shutdown starts a new explicit STOP; pending HAT fault stop
         # retains its verification timer throughout all inhibited control passes.
         self.assertEqual([c[0] for c in hat.commands].count("stop"),1)
+
+    def test_sampled_unconfirmed_stop_recovers_to_readiness_and_fresh_arm(self):
+        hat=FakeFastHat();views=[]
+        phases=[{"arm":172},{"arm":1811},{"arm":1811,"throttle":1811}]+[{"arm":1811}]*3+[{"arm":172},{"arm":1811},{"arm":1811,"throttle":1811}]
+        def unconfirmed():
+            hat.fault=FaultCode.MOTOR_TIMEOUT;hat.fault_wheel=2;hat.state=HatState.FAULT;hat.stop_state=StopState.UNCONFIRMED
+        def recovered(): hat.fault=0;hat.fault_wheel=0;hat.state=HatState.DISARMED
+        changes={3:unconfirmed,4:lambda:setattr(hat,"stop_state",StopState.CONFIRMED),5:recovered}
+        radio=PhaseRadio(phases)
+        with tempfile.TemporaryDirectory() as tmp:
+            robot=FastRobot(settings(),radio,telemetry_path=Path(tmp)/"data.csv",live_status=False)
+            def advance(_):
+                if radio.index==3: views.append(robot.snapshot())
+                if radio.index==len(phases)-1: robot.request_shutdown();return
+                radio.index+=1
+                if radio.index in changes: changes[radio.index]()
+            with patch("fast_robot.FastHat",return_value=hat),patch("fast_robot.time.sleep",side_effect=advance): robot.run()
+        self.assertEqual(views[0]["condition"],"STOP UNCONFIRMED");self.assertIsNone(views[0]["inspection_fault"])
+        self.assertRegex(views[0]["inhibition"],"^STOP UNCONFIRMED: .*fault 2 wheel 2")
+        with patch("fast_robot.LOG.info"),patch("fast_robot.LOG.warning") as warning:
+            robot._display_view(views[0],terminal=True)
+        self.assertIn(views[0]["inhibition"],[call.args[1] for call in warning.call_args_list])
+        kinds=[c[0] for c in hat.commands];arms=[i for i,kind in enumerate(kinds) if kind=="arm"]
+        self.assertEqual(len(arms),2);self.assertIn("targets",kinds[arms[1]:])
 
 
 class ShutdownStatusTests(unittest.TestCase):
@@ -437,3 +562,73 @@ class ShutdownStatusTests(unittest.TestCase):
         self.assertFalse(robot._display_wake.is_set())
         robot._publish_stop(StopState.CONFIRMED,status=status)
         self.assertTrue(robot._display_wake.is_set())
+
+
+class HatRecoveryTests(unittest.TestCase):
+    def test_restart_waits_for_recoverable_hat_fault_then_requires_fresh_arm(self):
+        # A Pi crash while armed leaves COMMAND_TIMEOUT latched until the HAT's own
+        # stopped recovery dwell. A restarted supervisor waits instead of exiting.
+        views=[]
+        def on_query(hat): views.append(robot.snapshot());hat.recover()
+        hat=RecoveringHat(on_query=on_query);phases=[{"arm":172},{"arm":1811},{"arm":1811,"throttle":1811}]
+        radio=PhaseRadio(phases);tmp=tempfile.TemporaryDirectory();self.addCleanup(tmp.cleanup)
+        robot=FastRobot(settings(),radio,telemetry_path=Path(tmp.name)/"data.csv",live_status=False)
+        def advance(_):
+            if hat.config is None: return  # still waiting; the operator cannot advance anything
+            if radio.index==len(phases)-1: robot.request_shutdown()
+            else: radio.index+=1
+        with patch("fast_robot.FastHat",return_value=hat),patch("fast_robot.time.sleep",side_effect=advance): robot.run()
+        kinds=[c[0] for c in hat.commands];configured=kinds.index("config")
+        self.assertEqual(kinds[0],"hello");self.assertEqual(set(kinds[1:configured]),{"status"})
+        self.assertEqual(kinds.count("hello"),1)
+        self.assertFalse(views[0]["armed"]);self.assertEqual(views[0]["fault"],FaultCode.COMMAND_TIMEOUT)
+        self.assertRegex(views[0]["inhibition"],"^Waiting for HAT recovery: fault 1 wheel 0")
+        self.assertEqual(kinds.count("arm"),1);self.assertIn("targets",kinds[kinds.index("arm"):])
+        self.assertTrue(robot._telemetry._done.wait(.5))
+        events=[json.loads(line) for line in robot.telemetry_path.with_suffix(".events.jsonl").read_text().splitlines()]
+        self.assertEqual([(e["fault"],e["wheel"]) for e in events if e["event"]=="waiting_for_hat_recovery"],[(1,0)])
+        recovered=[e for e in events if e["event"]=="readiness_recovered"]
+        self.assertTrue(recovered[0]["deliberate_rearm_required"])
+
+    def test_motor_power_off_at_startup_waits_instead_of_exhausting_restarts(self):
+        # Powered up with the independent cutoff open: the HAT answers, but no
+        # wheel feedback can confirm a stop until motor power returns.
+        class PoweredDownHat(RecoveringHat):
+            def hello(self):
+                seq=super().hello();self.stop_state=StopState.UNCONFIRMED;self.ages=(None,)*4
+                return seq
+            def recover(self):
+                super().recover();self.stop_state=StopState.CONFIRMED;self.ages=(0,0,0,0)
+        unconfirmed=FastHatError("Stop unconfirmed: four fresh stationary motor readings are required")
+        with patch("fast_robot.time.sleep"),patch.object(FastRobot,"_wait_disarmed",side_effect=unconfirmed):
+            robot=FastRobot(settings(),PhaseRadio([{}]),telemetry_path=Path("unused.csv"),live_status=False)
+            hat=PoweredDownHat(FaultCode.MOTOR_TIMEOUT,1,on_query=lambda hat:hat.recover() if hat.queries==3 else None)
+            robot._hat=hat
+            robot._establish_session()
+        kinds=[c[0] for c in hat.commands]
+        self.assertEqual(kinds.count("hello"),1)
+        self.assertEqual(kinds[-1],"config")
+        self.assertGreaterEqual(hat.queries,3)
+        self.assertFalse({"arm","targets"}&set(kinds))
+
+    def test_recovery_wait_ends_on_inspection_shutdown_stale_status_or_new_identity(self):
+        cases={"inspection_flag":(lambda hat,robot:setattr(hat,"reasons",Reason.INSPECTION_REQUIRED),FastHatError,3),
+               "inspection_fault":(lambda hat,robot:setattr(hat,"fault",FaultCode.STALL),FastHatError,3),
+               "shutdown":(lambda hat,robot:robot.request_shutdown(),OperatorStop,1),
+               "stale_status":(lambda hat,robot:setattr(hat,"stale",True),None,2),
+               "new_boot":(lambda hat,robot:setattr(hat,"boot",hat.boot+1),None,2)}
+        for name,(change,error,hellos) in cases.items():
+            with self.subTest(name),patch("fast_robot.time.sleep"):
+                robot=FastRobot(settings(),PhaseRadio([{}]),telemetry_path=Path("unused.csv"),live_status=False)
+                hat=RecoveringHat(FaultCode.OVERTEMPERATURE,3,
+                                  on_query=lambda hat:change(hat,robot) if hat.queries==1 else hat.recover())
+                robot._hat=hat
+                if error:
+                    with self.assertRaises(error):robot._establish_session()
+                else:
+                    robot._establish_session()
+                kinds=[c[0] for c in hat.commands]
+                self.assertGreaterEqual(hat.queries,1)  # the recoverable fault was waited on first
+                self.assertEqual(kinds.count("hello"),hellos)
+                self.assertEqual(kinds.count("config"),0 if error else 1)
+                self.assertFalse({"arm","targets"}&set(kinds))

@@ -148,14 +148,15 @@ static bool allNeutral() {
       return false;
   return true;
 }
-static bool allCurrentStationary() {
+static bool allCurrentBelow(uint8_t rpm) {
   const uint32_t now = millis();
   for (uint8_t i = 0; i < 4; i++)
     if (!wheel[i].valid || now - wheel[i].lastFeedbackMs > cfg.feedbackMs ||
-        abs(static_cast<int>(wheel[i].rpm)) > STATIONARY_RPM)
+        abs(static_cast<int>(wheel[i].rpm)) > rpm)
       return false;
   return true;
 }
+static bool allCurrentStationary() { return allCurrentBelow(STATIONARY_RPM); }
 static void controlSweep() {
   const uint16_t sweepSequence = stagedSequence;
   const uint32_t began = micros();
@@ -185,7 +186,7 @@ static void controlSweep() {
       settleStartedMs = 0;
     }
     if (state == SETTLING) {
-      if (allCurrentStationary()) {
+      if (allCurrentBelow(SETTLE_ENTRY_RPM)) {
         if (!settleStartedMs)
           settleStartedMs = millis() ? millis() : 1;
         if (millis() - settleStartedMs >= cfg.settleMs && cfg.holdEnabled)
@@ -237,6 +238,17 @@ static void controlSweep() {
   completedProgress();
   sendStatus();
 }
+// First wheel whose stop is unobserved, stale, in the wrong mode or moving.
+static uint8_t unsettledWheel() {
+  const uint32_t now = millis();
+  for (uint8_t i = 0; i < WHEEL_COUNT; i++) {
+    const Wheel &w = wheel[i];
+    if (!stopObserved[i] || !w.valid || now - w.lastFeedbackMs > cfg.feedbackMs ||
+        w.mode != 2 || abs(static_cast<int>(w.rpm)) > STATIONARY_RPM)
+      return i + 1;
+  }
+  return 0;
+}
 static bool recoverableFault() {
   return !inspectionRequired && recoverableFaultCode(faultCode);
 }
@@ -272,20 +284,29 @@ static void pollDisarmed() {
     stopState = 3;
     if (faultCode == NO_FAULT)
       state = DISARMED;
+  } else if (!stopVerificationPending) {
+    // A confirmed stop that is later disturbed, such as a pushed wheel, gets a
+    // new bounded verification window instead of an immediate fault.
+    stopVerificationPending = true;
+    stopVerifyStartedMs = millis();
+    stopState = 2;
   } else if (millis() - stopVerifyStartedMs >= cfg.stopVerifyMs) {
     stopState = 4;
-    stopVerificationPending = true;
     if (faultCode == NO_FAULT) {
-      latchFault(stationaryFresh() ? MOTOR_TIMEOUT : MOTOR_FAULT);
+      latchFault(stationaryFresh() ? MOTOR_TIMEOUT : MOTOR_FAULT,
+                 unsettledWheel());
       state = FAULT;
     }
   } else
     stopState = 2;
-  bool cool = stationaryFresh(true);
-  for (uint8_t i = 0; i < 4; i++)
-    if (wheel[i].tempC > cfg.tempReleaseC)
-      cool = false;
-  if (recoverableFault() && stopState == 3 && cool) {
+  // Only an overtemperature stop waits for the thermal release threshold;
+  // command, feedback and stale-temperature faults recover on healthy feedback.
+  bool ready = stationaryFresh(true);
+  if (faultCode == OVERTEMPERATURE)
+    for (uint8_t i = 0; i < 4; i++)
+      if (wheel[i].tempC > cfg.tempReleaseC)
+        ready = false;
+  if (recoverableFault() && stopState == 3 && ready) {
     if (!recoveryCoolSinceMs)
       recoveryCoolSinceMs = millis() ? millis() : 1;
     if (millis() - recoveryCoolSinceMs >= cfg.cooldownMs) {

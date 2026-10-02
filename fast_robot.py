@@ -23,9 +23,19 @@ from robot_radio import ProfileSelector
 LOG = logging.getLogger("robot.fast")
 STATIONARY_RPM = 2
 TELEMETRY_QUEUE_ROWS = 32
+# Only an ESP32 reset clears these; the HAT clears other faults after a confirmed stop.
+INSPECTION_FAULTS = (FaultCode.MOTOR_FAULT, FaultCode.OVERSPEED, FaultCode.STALL, FaultCode.ABNORMAL_CURRENT,
+                     FaultCode.CONFIGURATION_FAULT, FaultCode.CONTROL_PROGRESS)
 
 
 from robot_config import hat_configuration as fast_config
+
+
+def needs_inspection(status: FastStatus) -> bool:
+    """Inspection-level: a fault code, the HAT's latch after any first cause, or motor error bits."""
+    return (status.fault_code in INSPECTION_FAULTS or bool(status.reason_flags & Reason.INSPECTION_REQUIRED)
+            or any(w.error for w in status.wheels))
+
 
 def _telemetry_header() -> list[str]:
     fields = ["wall_time", "monotonic_s", "radio_age_ms", "link_quality", "armed", "throttle", "steering",
@@ -33,7 +43,7 @@ def _telemetry_header() -> list[str]:
               "stop_state", "hold_flags", "reason_flags", "boost_remaining_ms", "boost_capacity_ms",
               "boost_refill_remaining_ms", "cooldown_remaining_ms", "hat_sweep_us", "hat_command_age_ms",
               "hat_status_age_ms", "hat_ack_seq", "hat_applied_seq", "pi_command_seq", "missed_pi_deadlines",
-              "hat_last_rtt_ms", "hat_max_rtt_ms", "hat_status_interval_ms", "pi_control_interval_ms",
+              "hat_last_rtt_ms", "hat_max_rtt_ms", "hat_status_interval_ms", "hat_backlog_discards", "pi_control_interval_ms",
               "telemetry_queue_depth", "telemetry_dropped_rows", "telemetry_storage_error", "radio_tx_error",
               "boot_id", "host_session", "firmware_build_id", "hat_config_id"]
     for name in ("requested_rpm", "target_rpm", "actual_rpm", "effective_cap_ma", "hold_cap_ma", "reported_current_ma",
@@ -320,9 +330,15 @@ class FastRobot:
             try:
                 seq = self._hat.hello()
                 self._hat.wait_ack(seq, timeout=1.5)
-                stopped = self._wait_disarmed(3)
+                try:
+                    stopped = self._wait_disarmed(3)
+                except FastHatError:
+                    # The HAT answers but cannot confirm a stop, e.g. motor power is
+                    # off at the independent cutoff. Wait for its own recovery rather
+                    # than spending service restarts; a silent HAT raises here.
+                    stopped = self._await_hat_recovery(self._raw_status())
                 if stopped.fault_code:
-                    raise FastHatError(f"HAT fault {stopped.fault_code} prevents session configuration")
+                    stopped = self._await_hat_recovery(stopped)
                 self._boot_id, self._session_id = stopped.boot_id, stopped.host_session
                 seq = self._hat.send_config(self.config)
                 self._hat.wait_ack(seq, timeout=1)
@@ -336,21 +352,55 @@ class FastRobot:
                     raise
                 time.sleep(0.2 * (attempt + 1))
 
+    def _await_hat_recovery(self, status: FastStatus) -> FastStatus:
+        """Wait, motion-inhibited, while the HAT clears a recoverable fault itself.
+
+        No overall deadline: nothing here sends ARM or TARGETS, and an
+        overtemperature cooldown can take minutes. Shutdown, stale STATUS, a new
+        boot/session or an inspection-level fault ends the wait.
+        """
+        identity, waiting, last_query = (status.boot_id, status.host_session), False, 0.0
+        while True:
+            if self._shutdown.is_set():
+                raise OperatorStop("Shutdown requested")
+            if (status.boot_id, status.host_session) != identity:
+                raise FastHatError("HAT boot/session identity changed; fresh handshake required")
+            if needs_inspection(status):
+                raise FastHatError(f"HAT fault {status.fault_code} wheel {status.fault_wheel} "
+                                   "prevents session configuration")
+            if not status.fault_code and status.stop_confirmed and status.stationary(
+                    STATIONARY_RPM, self.config.feedback_timeout_ms):
+                return status
+            if not waiting:
+                waiting = True
+                cause = (f"fault {status.fault_code} wheel {status.fault_wheel}" if status.fault_code
+                         else "stop not confirmed; check motor power and wheel feedback")
+                self._last_inhibition = f"Waiting for HAT recovery: {cause}; motion inhibited, fresh arm cycle required"
+                self._event("waiting_for_hat_recovery", fault=int(status.fault_code), wheel=status.fault_wheel)
+            self._publish_stop(status.stop_state, status=status)
+            if self._hat is not None and time.monotonic() - last_query >= 0.1:
+                self._hat.request_status()
+                last_query = time.monotonic()
+            time.sleep(0.02)
+            status = self._raw_status()
+
     def _inhibit_reason(self, status: FastStatus) -> str | None:
         if self._inspection_fault:
             return self._inspection_fault
-        if status.stop_state == StopState.UNCONFIRMED:
-            self._inspection_fault = "STOP UNCONFIRMED: inspect missing wheel feedback and use independent cutoff"
+        fault = f"HAT fault {status.fault_code} wheel {status.fault_wheel}"
+        # Motor error, overspeed, stall, current, configuration and progress
+        # faults, or the HAT's own inspection latch after any first cause.
+        if status.fault_code in INSPECTION_FAULTS or status.reason_flags & Reason.INSPECTION_REQUIRED:
+            self._inspection_fault = f"{fault}: HAT needs inspection and ESP32 reset"
             return self._inspection_fault
+        if status.stop_state == StopState.UNCONFIRMED:
+            # Not latched: the HAT itself latches an inspection fault when an
+            # unresolved stop persists with motion; missing feedback can recover.
+            return ("STOP UNCONFIRMED: " + (f"{fault}; " if status.fault_code else "") +
+                    "inspect missing wheel feedback and use independent cutoff")
         if status.fault_code:
-            reason = f"HAT fault {status.fault_code} wheel {status.fault_wheel}"
-            # Motor error, stall, current and unconfirmed stop need inspection;
-            # command loss, feedback loss and thermal recovery clear to readiness.
-            if status.fault_code in (FaultCode.MOTOR_FAULT, FaultCode.OVERSPEED,
-                                     FaultCode.STALL, FaultCode.ABNORMAL_CURRENT, FaultCode.CONFIGURATION_FAULT,
-                                     FaultCode.CONTROL_PROGRESS):
-                self._inspection_fault = reason
-            return reason
+            # Command loss, feedback loss and thermal recovery clear to readiness.
+            return fault
         for mid, wheel in enumerate(status.wheels, 1):
             if wheel.error:
                 self._inspection_fault = f"Motor {mid} error 0x{wheel.error:02X}; inspect wheel"
@@ -381,7 +431,7 @@ class FastRobot:
                 "storage_error": telemetry.storage_error if telemetry else None,
                 "radio_tx_error": transmitter.error if transmitter else None,
                 "radio_tx_dropped": transmitter.dropped_batches if transmitter else 0,
-                "inspection_fault": self._inspection_fault,
+                "inspection_fault": self._inspection_fault, "inhibition": self._last_inhibition,
                 "wheels": [asdict(w) for w in status.wheels]}
         for index, wheel in enumerate(status.wheels):
             if wheel.temperature_valid and wheel.temp_age_ms is not None:
@@ -407,7 +457,7 @@ class FastRobot:
                               "STOP UNCONFIRMED" if stop == StopState.UNCONFIRMED else "STOP REQUESTED")
         with self._view_lock:
             changed = any(self._view.get(key) != view.get(key)
-                          for key in ("stop", "hat_state", "fault", "inspection_fault"))
+                          for key in ("stop", "hat_state", "fault", "inspection_fault", "inhibition"))
             self._view = view
         if changed:
             self._display_wake.set()
@@ -433,21 +483,25 @@ class FastRobot:
         if telemetry is None or self._last_status_at == status.received_at:
             return
         self._last_status_at = status.received_at
+        # csv.writer str()s enum members as names before Python 3.11; write plain ints.
         row = [time.time(), now, radio_age, radio.link_quality, int(view["armed"]),
                request.throttle if request else 0, request.steering if request else 0,
                view["requested_profile"], view["applied_profile"], view["profile_valid"], status.state.name,
-               status.fault_code, status.fault_wheel, status.stop_state.name, int(status.hold_flags), int(status.reason_flags),
+               int(status.fault_code), status.fault_wheel, status.stop_state.name, int(status.hold_flags), int(status.reason_flags),
                status.boost_remaining_ms, status.boost_capacity_ms, status.boost_refill_remaining_ms,
                status.cooldown_remaining_ms, status.sweep_us, status.command_age_ms, view["status_age_ms"],
                status.ack_seq, status.applied_seq, self._last_command_seq, self._missed_deadlines,
                getattr(stats, "last_rtt_ms", None), getattr(stats, "max_rtt_ms", None),
-               getattr(stats, "last_status_interval_ms", None), self._last_control_interval_ms,
+               getattr(stats, "last_status_interval_ms", None), getattr(stats, "backlog_discards", None),
+               self._last_control_interval_ms,
                telemetry.queue_depth(), telemetry.dropped_rows, telemetry.storage_error, view["radio_tx_error"],
                status.boot_id, status.host_session, status.build_id, status.config_id]
         row.extend(self._last_targets)
         for attr in ("target_rpm", "rpm", "effective_cap_ma", "hold_cap_ma", "current_ma", "temp_c", "error", "age_ms",
-                     "temp_age_ms", "position_raw", "validity", "reason_flags"):
+                     "temp_age_ms", "position_raw"):
             row.extend(getattr(w, attr) for w in status.wheels)
+        row.extend(int(w.validity) for w in status.wheels)
+        row.extend(int(w.reason_flags) for w in status.wheels)
         telemetry.submit(row)
         if hasattr(self.radio, "publish_telemetry"):
             summary = f"{status.state.name} {view['requested_profile'][0]}>{status.applied_profile.name[0]} B{status.boost_remaining_ms // 1000}s {status.stop_state.name}"
@@ -496,6 +550,7 @@ class FastRobot:
                  view["radio_age_ms"], view["command_age_ms"], wheels, view["reasons"], view["logging_dropped_rows"], view["storage_error"])
         warnings = []
         if view["inspection_fault"]: warnings.append(view["inspection_fault"])
+        if view.get("inhibition") and view["inhibition"] != view["inspection_fault"]: warnings.append(view["inhibition"])
         if view["fault"]: warnings.append(f"Protection stop wheel {view['fault_wheel']}, fault {view['fault']}; inspect status")
         if view["stop"] in ("UNCONFIRMED", "IN_PROGRESS", "REQUESTED"): warnings.append("Stop unconfirmed; use independent motor-power cutoff if needed")
         if "HOLD_LIMITED" in view["reasons"]: warnings.append("Holding limited; secure chassis against drift")
@@ -600,8 +655,12 @@ class FastRobot:
                         except FastHatError as exc:
                             self._event("motion_command_rejected", reason=str(exc))
                             self._safe_stop(wait_ack=False)
-                    status = self._raw_status()
-                    self._record(status, snap)
+                    try:
+                        status = self._raw_status()
+                    except FastHatError:
+                        pass  # Not recorded; the next pass's _status() inhibits and re-establishes.
+                    else:
+                        self._record(status, snap)
                     delay = period - (time.monotonic() - began)
                     if delay > 0:
                         time.sleep(delay)

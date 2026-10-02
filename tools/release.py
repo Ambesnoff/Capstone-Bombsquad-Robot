@@ -50,7 +50,7 @@ def main(argv: list[str] | None = None) -> int:
         'git_branch': run_git('branch', '--show-current'),
         'git_remote': run_git('remote', 'get-url', 'origin'),
         'development_snapshot': dirty,
-        'toolchain': {'board': 'esp32:esp32:esp32', 'arduino_esp32': '3.3.12', 'python_minimum': '3.10', 'pyserial': '3.5'},
+        'toolchain': {'board': 'esp32:esp32:esp32', 'arduino_esp32': '3.3.12', 'python': '3.14.8', 'pyserial': '3.5'},
         'files_sha256': hashes,
     }
     bundle = out / 'robot-history.bundle'

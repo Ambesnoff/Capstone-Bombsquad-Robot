@@ -78,52 +78,55 @@ static void sendStatus() {
     Serial.write(frame, sizeof(frame));
   lastStatusMs = now;
 }
-static ControllerConfig unpackConfig(const uint8_t *data) {
+// Copy by field name from the generated wire layout, so a schema change
+// cannot silently shift a firmware setting.
+static ControllerConfig fromWire(const ProtocolV2::Config &w) {
   ControllerConfig c;
-  uint16_t *fields[] = {&c.maxRpm,
-                        &c.maxCurrentMa,
-                        &c.neutralBrakeMa,
-                        &c.accelRpmS,
-                        &c.decelRpmS,
-                        &c.kpMaPerRpm,
-                        &c.kiMaPerRpmS,
-                        &c.ffMaPerRpmS,
-                        &c.watchdogMs,
-                        &c.periodMs,
-                        &c.stallMs,
-                        &c.gentleMa,
-                        &c.normalMa,
-                        &c.boostMa,
-                        &c.boostCapacityMs,
-                        &c.boostRefillMs,
-                        &c.tempPollMs,
-                        &c.boostFreshMs,
-                        &c.tempFreshMs,
-                        &c.cooldownMs,
-                        &c.capRampMaS,
-                        &c.holdMa,
-                        &c.holdKp,
-                        &c.holdKi,
-                        &c.holdDamping,
-                        &c.settleMs,
-                        &c.feedbackMs,
-                        &c.stallTargetCenti,
-                        &c.stallSpeedCenti,
-                        &c.stallCurrentMa,
-                        &c.abnormalCurrentMa,
-                        &c.abnormalMs,
-                        &c.abnormalMarginMa,
-                        &c.saturationWarnMs,
-                        &c.stopVerifyMs};
-  for (uint8_t i = 0; i < 35; i++)
-    *fields[i] = u16(data + 2 * i);
-  uint8_t *bytes[] = {
-      &c.tempWarnC,           &c.tempDerateC,     &c.tempLimitC,
-      &c.tempReleaseC,        &c.tempHysteresisC, &c.holdEnabled,
-      &c.disarmedHoldEnabled, &c.stallEnabled,    &c.holdTempC};
-  for (uint8_t i = 0; i < 9; i++)
-    *bytes[i] = data[70 + i];
-  c.encoderCountsPerRev = u32(data + 79);
+  c.maxRpm = w.max_rpm;
+  c.maxCurrentMa = w.max_current_ma;
+  c.neutralBrakeMa = w.neutral_brake_ma;
+  c.accelRpmS = w.accel_rpm_s;
+  c.decelRpmS = w.decel_rpm_s;
+  c.kpMaPerRpm = w.kp_ma_per_rpm;
+  c.kiMaPerRpmS = w.ki_ma_per_rpm_s;
+  c.ffMaPerRpmS = w.ff_ma_per_rpm_s;
+  c.watchdogMs = w.watchdog_ms;
+  c.periodMs = w.control_period_ms;
+  c.stallMs = w.stall_time_ms;
+  c.gentleMa = w.gentle_current_ma;
+  c.normalMa = w.normal_current_ma;
+  c.boostMa = w.boost_current_ma;
+  c.boostCapacityMs = w.boost_capacity_ms;
+  c.boostRefillMs = w.boost_refill_ms;
+  c.tempPollMs = w.temp_poll_ms;
+  c.boostFreshMs = w.temp_boost_stale_ms;
+  c.tempFreshMs = w.temp_stop_stale_ms;
+  c.cooldownMs = w.cooldown_ms;
+  c.capRampMaS = w.cap_ramp_ma_s;
+  c.holdMa = w.hold_current_ma;
+  c.holdKp = w.hold_kp_ma_per_degree;
+  c.holdKi = w.hold_ki_ma_per_degree_s;
+  c.holdDamping = w.hold_damping_ma_per_rpm;
+  c.settleMs = w.neutral_settle_ms;
+  c.feedbackMs = w.feedback_timeout_ms;
+  c.stallTargetCenti = w.stall_target_centi_rpm;
+  c.stallSpeedCenti = w.stall_speed_centi_rpm;
+  c.stallCurrentMa = w.stall_current_ma;
+  c.abnormalCurrentMa = w.abnormal_current_ma;
+  c.abnormalMs = w.abnormal_current_ms;
+  c.abnormalMarginMa = w.abnormal_margin_ma;
+  c.saturationWarnMs = w.saturation_warn_ms;
+  c.stopVerifyMs = w.stop_verify_ms;
+  c.tempWarnC = w.temp_warn_c;
+  c.tempDerateC = w.temp_derate_c;
+  c.tempLimitC = w.temp_limit_c;
+  c.tempReleaseC = w.temp_release_c;
+  c.tempHysteresisC = w.temp_hysteresis_c;
+  c.holdEnabled = w.hold_enabled;
+  c.disarmedHoldEnabled = w.disarmed_hold_enabled;
+  c.stallEnabled = w.stall_enabled;
+  c.holdTempC = w.hold_temp_c;
+  c.encoderCountsPerRev = w.encoder_counts_per_rev;
   return c;
 }
 static uint32_t configCrc32(const uint8_t *data, size_t n) {
@@ -153,8 +156,6 @@ static void requestStop() {
 }
 static void handleHostFrame(uint8_t type, uint16_t seq, const uint8_t *data,
                             uint8_t n) {
-  if (type == CONFIG)
-    configAckSequence = seq;
   if (type == HELLO && n == 8) {
     helloNonce = u64(data);
     ++sessionCounter;
@@ -186,13 +187,19 @@ static void handleHostFrame(uint8_t type, uint16_t seq, const uint8_t *data,
   if (n < 16 || !hostSession || u64(data) != bootId ||
       u64(data + 8) != hostSession) {
     reasonFlags |= R_SESSION;
-    configResult = 4;
+    // config_result and config_ack_seq describe CONFIG requests only; a
+    // rejected motion frame must not replace the applied result.
+    if (type == CONFIG) {
+      configAckSequence = seq;
+      configResult = 4;
+    }
     sendStatus();
     return;
   }
   if (!freshCommand(seq))
     return;
   if (type == CONFIG && n == sizeof(ProtocolV2::ConfigPayload)) {
+    configAckSequence = seq;
     if (state != DISARMED || stopPending || stopping || stopState != 3 ||
         !stationaryFresh(true)) {
       configResult = 2;
@@ -200,7 +207,6 @@ static void handleHostFrame(uint8_t type, uint16_t seq, const uint8_t *data,
       sendStatus();
       return;
     }
-    const ControllerConfig candidate = unpackConfig(data + 20);
     const uint32_t id = u32(data + 16);
     ProtocolV2::Config wireCandidate;
     memcpy(&wireCandidate, data + 20, sizeof(wireCandidate));
@@ -214,7 +220,7 @@ static void handleHostFrame(uint8_t type, uint16_t seq, const uint8_t *data,
     // An ARM names the configuration under which it was requested. A newly
     // accepted configuration requires a new ARM, even while still disarmed.
     armPending = false;
-    cfg = candidate;
+    cfg = fromWire(wireCandidate);
     configured = true;
     configId = id;
     configResult = 1;

@@ -35,8 +35,10 @@ CSV logging uses bounded background work, unique session files, full configurati
 
 ## Run and verify
 
+**Python 3.14.8 is required** on the robot and for full verification. Create the virtual environment with `python3.14`; `./.venv/bin/python --version` must report 3.14.8.
+
 ```sh
-python3 -m venv .venv
+python3.14 -m venv .venv
 ./.venv/bin/python -m pip install -r requirements.txt
 cp config.example.json config.json
 ./.venv/bin/python robot_main.py check --config config.json
@@ -47,10 +49,12 @@ cp config.example.json config.json
 The monitor never opens the motor port. Run the drive only with raised wheels, restraints, and an independent power cutoff until commissioning acceptance passes.
 
 ```sh
-python3 -m unittest discover -s tests -v
+python3 tools/verify.py
 python3 tools/release.py
 python3 tools/commissioning.py new commissioning/runs/trial-001.json
 ```
+
+`tools/verify.py` (run it with the 3.14.8 interpreter) is the single verification gate: generator and example-config checks, then the full test suite once per available C++ compiler (clang++ and GNU GCC) with native tests required. Any failure, error, or skip fails it. It refuses other Python versions; `--allow-python-mismatch` is diagnostic only, **not** a full verification. `--compilers g++-16,clang++` overrides detection. Native tests honor `CXX` (`CXX=g++-16 python3 -m unittest discover -s tests`) and fail rather than skip under `ROBOT_REQUIRE_NATIVE=1`. On macOS `g++` is Apple clang; GNU GCC is `g++-N`.
 
 Pin Arduino-ESP32 to **3.3.12**, board **ESP32 Dev Module** (`esp32:esp32:esp32`). Use the generated firmware headers beside the existing sketch; copying only the `.ino` is insufficient. See [HAT_PROTOCOL.md](HAT_PROTOCOL.md) for the wire contract.
 
@@ -58,4 +62,4 @@ Pin Arduino-ESP32 to **3.3.12**, board **ESP32 Dev Module** (`esp32:esp32:esp32`
 
 Build and verify [INDEPENDENT_STOP.md](INDEPENDENT_STOP.md), then follow [COMMISSIONING.md](COMMISSIONING.md). The assembled robot still needs measured stopping, holding, timing, thermal/electrical, and load/terrain qualification. The 15 ms sweep is a timing target; expanded telemetry and motor turnaround must be measured.
 
-The original 44-test behavior is preserved in `releases/robot-v1-baseline.zip`. Release tooling exports this Git checkout as a source archive, manifest, and portable Git history. The separate `baseline/original-v1` branch preserves the original code for Claude; `main` is unchanged. [CLEANUP.md](CLEANUP.md) identifies removable generated files. The legacy drive is retained until fast-path physical acceptance; **keep `motor_setup.py` and `ddsm115.py`** for factory motor-ID work.
+The original 44-test behavior is preserved in `releases/robot-v1-baseline.zip`. Release tooling exports this Git checkout as a source archive, manifest, and portable Git history. The separate `baseline/original-v1` branch preserves the original code. [CLEANUP.md](CLEANUP.md) identifies removable generated files. The legacy drive is retained until fast-path physical acceptance; **keep `motor_setup.py` and `ddsm115.py`** for factory motor-ID work.

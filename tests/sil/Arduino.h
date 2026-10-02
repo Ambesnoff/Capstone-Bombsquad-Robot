@@ -11,9 +11,11 @@
 using std::max;
 using std::min;
 constexpr int SERIAL_8N1 = 0;
+// Waveshare documents DDSM115 0x64 position feedback as 0..32767 per turn.
+inline float simCountsPerRev = 32768;
 struct SimMotor {
   uint8_t mode = 3, error = 0;
-  float rpm = 0, currentMa = 0, position = 65530, externalLoad = 0;
+  float rpm = 0, currentMa = 0, position = 32762, externalLoad = 0;
   int temp = 25;
   bool absent = false, corrupt = false, ignoreMode = false, stuck = false;
   int feedbackCurrent = 0;
@@ -38,8 +40,9 @@ inline void advanceUs(uint64_t us) {
         m.rpm += (m.currentMa * 0.16f - m.rpm * 5.0f + m.externalLoad) * dt;
       else if (m.mode == 2)
         m.rpm *= std::exp(-35.0f * dt);
-      m.position = std::fmod(
-          m.position + m.rpm * (65536.0f / 60.0f) * dt + 65536.0f, 65536.0f);
+      m.position = std::fmod(m.position + m.rpm * (simCountsPerRev / 60.0f) * dt +
+                                 simCountsPerRev,
+                             simCountsPerRev);
     }
     simTimeUs += step;
     us -= step;
@@ -140,7 +143,7 @@ inline size_t FakeSerial::write(const uint8_t *p, size_t n) {
   const uint16_t pos = uint16_t(m.position);
   if (p[1] == 0x74) {
     reply[6] = uint8_t(m.temp);
-    reply[7] = uint8_t(pos >> 8);
+    reply[7] = uint8_t(pos * 256 / uint32_t(simCountsPerRev));
   } else {
     reply[6] = pos >> 8;
     reply[7] = uint8_t(pos);

@@ -11,6 +11,10 @@ static constexpr uint16_t HOST_MAX_FRAME = 9 + HOST_MAX_PAYLOAD;
 static constexpr uint32_t MOTOR_REPLY_TIMEOUT_US = 8000;
 static constexpr uint16_t HARD_MAX_RPM = 200, HARD_MAX_CURRENT_MA = 2700;
 static constexpr uint8_t HARD_MAX_TEMP_C = 70, STATIONARY_RPM = 2;
+// Whole-chassis neutral enters position holding once every wheel stays at or
+// below this speed for the settle dwell; a slope keeps a coasting wheel just
+// above STATIONARY_RPM, so requiring true rest there can never complete.
+static constexpr uint8_t SETTLE_ENTRY_RPM = 6;
 enum DriveState : uint8_t {
   BOOT_STOPPING = 0,
   DISARMED = 1,
@@ -67,8 +71,68 @@ enum : uint32_t {
   R_COOLDOWN = 8192,
   R_CONFIG = 16384,
   R_SESSION = 32768,
-  R_SPEED = 65536
+  R_SPEED = 65536,
+  R_INSPECTION = 131072
 };
+// The control code names these values directly; they must stay identical to
+// the generated wire contract shared with the Pi.
+template <typename T> constexpr uint32_t wireValue(T value) {
+  return static_cast<uint32_t>(value);
+}
+static_assert(BOOT_STOPPING == wireValue(ProtocolV2::HatState::BOOT_STOPPING) &&
+                  DISARMED == wireValue(ProtocolV2::HatState::DISARMED) &&
+                  ARMED == wireValue(ProtocolV2::HatState::ARMED) &&
+                  FAULT == wireValue(ProtocolV2::HatState::FAULT) &&
+                  SETTLING == wireValue(ProtocolV2::HatState::SETTLING) &&
+                  HOLDING == wireValue(ProtocolV2::HatState::HOLDING) &&
+                  STOPPING == wireValue(ProtocolV2::HatState::STOPPING),
+              "DriveState must match the generated HatState");
+static_assert(
+    NO_FAULT == wireValue(ProtocolV2::FaultCode::NONE) &&
+        COMMAND_TIMEOUT == wireValue(ProtocolV2::FaultCode::COMMAND_TIMEOUT) &&
+        MOTOR_TIMEOUT == wireValue(ProtocolV2::FaultCode::MOTOR_TIMEOUT) &&
+        BAD_MOTOR_FRAME == wireValue(ProtocolV2::FaultCode::BAD_MOTOR_FRAME) &&
+        MOTOR_FAULT == wireValue(ProtocolV2::FaultCode::MOTOR_FAULT) &&
+        OVERSPEED == wireValue(ProtocolV2::FaultCode::OVERSPEED) &&
+        OVERTEMPERATURE == wireValue(ProtocolV2::FaultCode::OVERTEMPERATURE) &&
+        STALL == wireValue(ProtocolV2::FaultCode::STALL) &&
+        ABNORMAL_CURRENT == wireValue(ProtocolV2::FaultCode::ABNORMAL_CURRENT) &&
+        CONFIGURATION_FAULT ==
+            wireValue(ProtocolV2::FaultCode::CONFIGURATION_FAULT) &&
+        TEMPERATURE_STALE == wireValue(ProtocolV2::FaultCode::TEMPERATURE_STALE) &&
+        CONTROL_PROGRESS == wireValue(ProtocolV2::FaultCode::CONTROL_PROGRESS),
+    "FaultCode must match the generated FaultCode");
+static_assert(HELLO == wireValue(ProtocolV2::FrameType::HELLO) &&
+                  CONFIG == wireValue(ProtocolV2::FrameType::CONFIG) &&
+                  ARM == wireValue(ProtocolV2::FrameType::ARM) &&
+                  TARGETS == wireValue(ProtocolV2::FrameType::TARGETS) &&
+                  STOP == wireValue(ProtocolV2::FrameType::STOP) &&
+                  STATUS_REQ == wireValue(ProtocolV2::FrameType::STATUS_REQ) &&
+                  STATUS_FRAME == wireValue(ProtocolV2::FrameType::STATUS),
+              "Frame types must match the generated FrameType");
+static_assert(
+    R_CEILING == wireValue(ProtocolV2::Reason::FIRMWARE_CEILING) &&
+        R_BOOST_EMPTY == wireValue(ProtocolV2::Reason::BOOST_EMPTY) &&
+        R_TEMP_STALE == wireValue(ProtocolV2::Reason::TEMP_STALE) &&
+        R_TEMP_WARN == wireValue(ProtocolV2::Reason::THERMAL_WARNING) &&
+        R_DERATE == wireValue(ProtocolV2::Reason::THERMAL_DERATE) &&
+        R_THERMAL_STOP == wireValue(ProtocolV2::Reason::THERMAL_STOP) &&
+        R_FEEDBACK_STALE == wireValue(ProtocolV2::Reason::FEEDBACK_STALE) &&
+        R_MOTOR_ERROR == wireValue(ProtocolV2::Reason::MOTOR_ERROR) &&
+        R_STALL_WARN == wireValue(ProtocolV2::Reason::STALL_WARNING) &&
+        R_STALL == wireValue(ProtocolV2::Reason::STALL) &&
+        R_CURRENT == wireValue(ProtocolV2::Reason::ABNORMAL_CURRENT) &&
+        R_COMMAND == wireValue(ProtocolV2::Reason::COMMAND_TIMEOUT) &&
+        R_HOLD_LIMITED == wireValue(ProtocolV2::Reason::HOLD_LIMITED) &&
+        R_COOLDOWN == wireValue(ProtocolV2::Reason::COOLDOWN) &&
+        R_CONFIG == wireValue(ProtocolV2::Reason::CONFIG_REJECTED) &&
+        R_SESSION == wireValue(ProtocolV2::Reason::SESSION_MISMATCH) &&
+        R_SPEED == wireValue(ProtocolV2::Reason::SPEED_ERROR) &&
+        R_INSPECTION == wireValue(ProtocolV2::Reason::INSPECTION_REQUIRED),
+    "Reason bits must match the generated Reason flags");
+static_assert(HARD_MAX_CURRENT_MA == ProtocolV2::FIRMWARE_MAX_CURRENT_MA &&
+                  HOST_MAX_PAYLOAD == ProtocolV2::MAX_PAYLOAD,
+              "Firmware limits must match the generated contract");
 struct ControllerConfig {
   uint16_t maxRpm = 40, maxCurrentMa = 2700, neutralBrakeMa = 300,
            accelRpmS = 120, decelRpmS = 180;
@@ -88,7 +152,7 @@ struct ControllerConfig {
           tempHysteresisC = 3;
   uint8_t holdEnabled = 1, disarmedHoldEnabled = 0, stallEnabled = 1,
           holdTempC = 55;
-  uint32_t encoderCountsPerRev = 65536;
+  uint32_t encoderCountsPerRev = 32768;
 };
 struct Wheel {
   int16_t rpm = 0, currentMa = 0, lastCommandedMa = 0;
