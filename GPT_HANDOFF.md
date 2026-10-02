@@ -14,8 +14,7 @@ To continue original work in Claude without touching the GPT checkout, clone int
 git clone --branch baseline/original-v1 https://github.com/Ambesnoff/Capstone-Bombsquad-Robot.git robot-claude-v1
 ```
 
-To continue this implementation, branch from `main`. Keep Claude and GPT on separate checkouts. The local ChatGPT project folder is still on the deleted `gpt/architecture-v2` branch with the pre-audit code; switch it to `main` and pull before working there. The original archive is also retained at `releases/robot-v1-baseline.zip`.
-
+To continue this implementation, branch from `main`. Keep Claude and GPT on separate checkouts. The local ChatGPT project folder is still on the deleted `gpt/architecture-v2` branch with the pre-audit code; switch it to `main` and pull before working there.
 The mode switch is **SB**, mapped to CH6 in the fast example. SA/CH5 arms, SD/CH7 stops, SC/CH8 selects reverse. Verify actual radio mixes; physical switch names are not fixed channel numbers. Fast modes permit 0.8 A Gentle, 1.5 A Normal, and 2.5 A Boost. No 1.2 A fast-path cap remains. Thermal/budget/protective reductions stay visible.
 
-Read `IMPLEMENTATION_STATUS.md` for delivered code/tests and remaining physical acceptance work, `ROBOT_SETUP_GUIDE.md` for installation, and `CLEANUP.md` for removable generated files. Software implementation and test results do not replace robot measurements.
+Read `IMPLEMENTATION_STATUS.md` for delivered code/tests and remaining physical acceptance work, and `ROBOT_SETUP_GUIDE.md` for installation. Software implementation and test results do not replace robot measurements.
