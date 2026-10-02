@@ -14,7 +14,9 @@ CASES=("ramp","physics","boot_modes","arm_mode_failure","faulted_stop_polling",
        "old_stop","repeat_stop_deadline","session_replay","applied_complete","profiles_ceiling","full_profiles","boost_budget",
        "stop_boost_refill","boost_stale","hot_driving_neutral","gentle_overcurrent","hold_neutral_overcurrent","thermal","hold_wrap","encoder_long_run","hold_independent","inner_zero",
        "disarmed_hold","stall","reversal","abnormal_current","command_expiry",
-       "crc_recovery","config_motion_reject","parser_noise","bounded_io","bounded_drain","progress_watchdog","rollover")
+       "crc_recovery","config_motion_reject","parser_noise","bounded_io","bounded_drain","progress_watchdog","rollover",
+       "encoder_wrap_hold","warm_command_recovery","disarmed_push","slope_settle",
+       "config_result_scope","derate_disables_boost")
 class HatFirmwareNativeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

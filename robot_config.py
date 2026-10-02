@@ -131,7 +131,7 @@ class ProtectionSettings:
     stall_enabled: bool = True
     temp_poll_ms: int = 500
     feedback_timeout_ms: int = 150
-    encoder_counts_per_rev: int = 65536
+    encoder_counts_per_rev: int = 32768
     neutral_settle_ms: int = 300
     disarmed_hold: bool = False
     stall_target_rpm: int = 8

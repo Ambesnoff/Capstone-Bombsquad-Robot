@@ -117,6 +117,9 @@ static void protectionUpdate(float dt) {
   else if (faultCode == CONFIGURATION_FAULT)
     faultReason = R_CONFIG;
   reasonFlags |= faultReason;
+  // The first cause can be recoverable while a later one requires inspection.
+  if (inspectionRequired)
+    reasonFlags |= R_INSPECTION;
   if (faultWheel >= 1 && faultWheel <= 4)
     wheel[faultWheel - 1].reason |= faultReason;
   for (uint8_t i = 0; i < WHEEL_COUNT; i++) {

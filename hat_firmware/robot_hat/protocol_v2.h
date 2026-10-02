@@ -61,6 +61,7 @@ enum class Reason : uint32_t {
   CONFIG_REJECTED = 16384,
   SESSION_MISMATCH = 32768,
   SPEED_ERROR = 65536,
+  INSPECTION_REQUIRED = 131072,
 };
 enum class Capability : uint32_t {
   PROFILES = 1,
@@ -336,7 +337,7 @@ inline Config defaultConfig() {
     0, // disarmed_hold_enabled
     1, // stall_enabled
     55, // hold_temp_c
-    65536, // encoder_counts_per_rev
+    32768, // encoder_counts_per_rev
   };
 }
 inline bool validConfig(const Config &c) {

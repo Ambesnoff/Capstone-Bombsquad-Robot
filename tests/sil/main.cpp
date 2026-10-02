@@ -89,6 +89,9 @@ static void assertInspectionLockout(FaultCode firstCause, uint8_t firstWheel) {
   assert(!haveTargets);
   for (const auto &w : wheel)
     assert(w.error == 0);
+  // STATUS must expose the latch even when the first cause was recoverable.
+  protectionUpdate(0);
+  assert(reasonFlags & R_INSPECTION);
   const uint16_t acceptedBefore = lastAcceptedSequence;
   ProtocolV2::ArmPayload p{{bootId, hostSession}, configId};
   handleHostFrame(ARM, ++seq, reinterpret_cast<uint8_t *>(&p), sizeof(p));
@@ -96,6 +99,38 @@ static void assertInspectionLockout(FaultCode firstCause, uint8_t firstWheel) {
   loop();
   assert(!motionState());
   assert(lastAcceptedSequence == acceptedBefore);
+}
+static void forceRpm(uint8_t index, float rpm, uint32_t ms) {
+  const uint32_t end = millis() + ms;
+  while (static_cast<int32_t>(millis() - end) < 0) {
+    simMotor[index].rpm = rpm;
+    loop();
+    advanceUs(1000);
+  }
+}
+// Peak true wheel rotation in degrees, measured on the simulated motor rather
+// than through the firmware's own encoder scaling.
+static float simRotationDuring(uint8_t index, uint32_t ms) {
+  float last = simMotor[index].position, counts = 0, peak = 0;
+  const uint32_t end = millis() + ms;
+  uint32_t refresh = millis();
+  while (static_cast<int32_t>(millis() - end) < 0) {
+    if (static_cast<int32_t>(millis() - refresh) >= 0) {
+      sendTargets(0);
+      refresh = millis() + 50;
+    }
+    loop();
+    advanceUs(1000);
+    float delta = simMotor[index].position - last;
+    if (delta > simCountsPerRev / 2)
+      delta -= simCountsPerRev;
+    else if (delta < -simCountsPerRev / 2)
+      delta += simCountsPerRev;
+    counts += delta;
+    last = simMotor[index].position;
+    peak = std::max(peak, std::fabs(counts));
+  }
+  return peak * 360.0f / simCountsPerRev;
 }
 static void execute(const std::string &name) {
   if (name == "ramp") {
@@ -499,6 +534,7 @@ static void execute(const std::string &name) {
     runFor(800, true);
     assert(state == HOLDING);
     Wheel &w = wheel[0];
+    cfg.encoderCountsPerRev = 65536;
     w.positionValid = true;
     w.positionUnwrapped = w.holdAnchor = 65530;
     w.lastPositionRaw = 65530;
@@ -734,6 +770,141 @@ static void execute(const std::string &name) {
     const MotorResult r = motorTransaction(1, true, 0, 0, false);
     assert(r == MOTOR_NO_REPLY);
     assert(micros() == began);
+    return;
+  }
+  if (name == "encoder_wrap_hold") {
+    // Documented 32768-count motors with the default configuration: a held
+    // wheel creeping across the position wrap must not see a false half turn.
+    for (auto &m : simMotor)
+      m.position = simCountsPerRev - 60;
+    ready();
+    runFor(800, true);
+    assert(state == HOLDING);
+    simMotor[0].externalLoad = 2;
+    const float degrees = simRotationDuring(0, 10000);
+    std::cerr << "encoder_wrap_hold peak_deg=" << degrees << "\n";
+    assert(degrees < 30);
+    assert(state == HOLDING);
+    assert(faultCode == NO_FAULT);
+    assert(cfg.encoderCountsPerRev == uint32_t(simCountsPerRev));
+    return;
+  }
+  if (name == "warm_command_recovery") {
+    // Command and feedback faults are not thermal: motors that are warm but
+    // below the warning threshold must not block recovery to readiness.
+    ready();
+    runFor(1000, true, 2000, 1);
+    for (auto &m : simMotor)
+      m.temp = 47;
+    runFor(800);
+    assert(faultCode == COMMAND_TIMEOUT);
+    runFor(5000);
+    assert(faultCode == NO_FAULT);
+    assert(state == DISARMED);
+    assert(!haveTargets);
+    // A motor-reported overtemperature still waits for the release threshold.
+    arm();
+    runFor(500, true, 2000, 1);
+    simMotor[1].temp = 66;
+    runFor(1500, true, 2000, 1);
+    assert(faultCode == OVERTEMPERATURE);
+    assert(faultWheel == 2);
+    simMotor[1].temp = 47;
+    runFor(5000);
+    assert(state == FAULT);
+    for (auto &m : simMotor)
+      m.temp = 44;
+    runFor(5000);
+    assert(faultCode == NO_FAULT);
+    assert(state == DISARMED);
+    return;
+  }
+  if (name == "disarmed_push") {
+    // A brief push after a confirmed stop is verified again rather than
+    // latched as a motor fault. Sustained motion past the verification window
+    // still latches an inspection fault that names the moving wheel.
+    boot();
+    hello();
+    configure();
+    runFor(2000);
+    assert(state == DISARMED);
+    assert(stopState == 3);
+    forceRpm(0, 8, 150);
+    runFor(3000);
+    assert(faultCode == NO_FAULT);
+    assert(!inspectionRequired);
+    assert(stopState == 3);
+    arm();
+    handleHostFrame(STOP, ++seq, nullptr, 0);
+    runFor(2500);
+    assert(stopState == 3);
+    forceRpm(2, 8, 2500);
+    assert(stopState == 4);
+    assert(faultCode == MOTOR_FAULT);
+    assert(faultWheel == 3);
+    assert(inspectionRequired);
+    return;
+  }
+  if (name == "slope_settle") {
+    // Neutral on a slope must reach position holding instead of creeping
+    // indefinitely just above the stationary threshold.
+    boot();
+    hello();
+    configure();
+    for (auto &m : simMotor)
+      m.externalLoad = -30;
+    arm();
+    runFor(1500, true);
+    assert(state == HOLDING);
+    const float degrees = simRotationDuring(0, 10000);
+    std::cerr << "slope_settle peak_deg=" << degrees << "\n";
+    assert(degrees < 90);
+    assert(state == HOLDING);
+    assert(faultCode == NO_FAULT);
+    return;
+  }
+  if (name == "config_result_scope") {
+    // config_result reports CONFIG outcomes only. A stale motion frame must
+    // not overwrite the applied result the Pi verifies on every cycle.
+    ready();
+    assert(configResult == 1);
+    const uint16_t ack = configAckSequence;
+    ProtocolV2::TargetsPayload stale{{bootId, hostSession + 1}, {0, 0, 0, 0}, 0};
+    handleHostFrame(TARGETS, ++seq, reinterpret_cast<uint8_t *>(&stale),
+                    sizeof(stale));
+    assert(configResult == 1);
+    assert(configAckSequence == ack);
+    ProtocolV2::ConfigPayload wrong{};
+    wrong.session = {bootId, hostSession + 1};
+    const uint16_t configSequence = ++seq;
+    handleHostFrame(CONFIG, configSequence, reinterpret_cast<uint8_t *>(&wrong),
+                    sizeof(wrong));
+    assert(configResult == 4);
+    assert(configAckSequence == configSequence);
+    ProtocolV2::ConfigPayload old{};
+    old.session = {bootId, hostSession};
+    handleHostFrame(CONFIG, configSequence - 10,
+                    reinterpret_cast<uint8_t *>(&old), sizeof(old));
+    assert(configAckSequence == configSequence);
+    return;
+  }
+  if (name == "derate_disables_boost") {
+    // A derating temperature reported over the motor bus disables Boost for
+    // the robot without consuming the remaining allowance.
+    ready();
+    simMotor[1].temp = 56;
+    runFor(1000, true, 2000, 1);
+    assert(wheel[1].tempC == 56);
+    assert(wheel[1].thermalDerating);
+    boostRemainingMs = 10000;
+    runFor(1000, true, 2000, 2);
+    assert(requestedProfile == 2);
+    assert(appliedProfile == 1);
+    near(boostRemainingMs, 10000, 1);
+    assert(wheel[1].effectiveCapMa <= cfg.gentleMa);
+    for (int i : {0, 2, 3})
+      assert(wheel[i].effectiveCapMa <= cfg.normalMa + 1);
+    assert(reasonFlags & R_DERATE);
     return;
   }
   throw std::runtime_error("unknown simulator case " + name);

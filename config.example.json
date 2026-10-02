@@ -99,7 +99,7 @@
     "abnormal_margin_a": 0.4,
     "saturation_warn_ms": 500,
     "stop_verify_ms": 1500,
-    "encoder_counts_per_rev": 65536
+    "encoder_counts_per_rev": 32768
   },
   "radio_telemetry_enabled": false,
   "radio_telemetry_hz": 2.0,

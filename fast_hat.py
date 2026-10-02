@@ -306,7 +306,7 @@ class FastConfig:
     disarmed_hold_enabled: bool = False
     stall_enabled: bool = True
     hold_temp_c: int = 55
-    encoder_counts_per_rev: int = 65536
+    encoder_counts_per_rev: int = 32768
 
     def payload(self) -> bytes:
         validate_config({name: getattr(self, name) for name in CONFIG_FIELDS})
