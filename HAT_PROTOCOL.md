@@ -14,8 +14,9 @@ All integers are little endian. The packed wire definitions are generated from
 `robot_protocol.json` into `protocol_defs.py` and
 `hat_firmware/robot_hat/protocol_v2.h`. Update the schema, run
 `python3 generate_protocol.py`, and verify `python3 generate_protocol.py --check`.
-The generator produces field offsets, size assertions and identical Python/C++
-configuration range and relationship validators.
+The generator produces field offsets, size assertions and equivalent Python/C++
+configuration range and relationship validators (the C++ one omits bounds its
+wire type already guarantees, which GNU GCC rejects under `-Werror`).
 
 | Field | Bytes | Value |
 |---|---:|---|
