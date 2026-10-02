@@ -68,5 +68,5 @@ REPOSITORY HOUSEKEEPING (needs your OK - removal was blocked for me)
   (needed to set motor IDs).
 - After the fast path passes hardware acceptance, the legacy drive can be
   deleted (Robot class in robot_main.py, config.legacy.example.json).
-- "main" is an earlier partial upload. The real pre-v2 code is the
-  "baseline/original-v1" branch.
+- "main" now holds v2 plus the audit fixes. The original pre-v2 code is
+  the "baseline/original-v1" branch; keep it.
