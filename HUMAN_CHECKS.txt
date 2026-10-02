@@ -1,0 +1,72 @@
+QUICK HUMAN CHECKS - robot architecture v2 (+ claude/v2-audit-fixes)
+Things a person can check by eye, with the radio, or on the bench.
+
+RADIO / SWITCHES  (the new modes overlap the old controls)
+- The channel map CHANGED from the old robot:
+    old: CH6 = reverse switch, CH10 = S1 current dial
+    new: CH6 = SB Gentle/Normal/Boost, CH8 = SC reverse,
+         CH5 = SA arm, CH7 = SD stop, CH3 = throttle, CH1 = steering
+- If the radio model still has the OLD mixes, flipping the old reverse
+  switch selects BOOST instead of reverse. Fix the EdgeTX mixes first.
+- Confirm with: python3 robot_main.py monitor-radio --config config.json
+  SB must show three distinct raw values (about 172 / 992 / 1811).
+  Bands: Gentle 150-350, Normal 850-1150, Boost 1650-1850.
+  Anything outside the bands is treated as Gentle.
+- The S1 dial is not used by the fast backend. Remove its mix unless you
+  still use the legacy backend.
+- ELRS switch mode must pass all three SB positions on CH6
+  (see ROBOT_SETUP_GUIDE.md).
+
+CONFIG FILE
+- If your config.json came from the OLD example, delete
+  "independent_ceiling_a" from "profiles". It duplicated "max_current_a",
+  which is now the single 2.7 A ceiling. "loop_period_s" and
+  "hat_heartbeat_ms" only matter for the legacy backend.
+- encoder_counts_per_rev is now 32768 (Waveshare's documented DDSM115
+  range). Check on a raised wheel: turn it one full turn by hand and
+  watch position_raw in the live view. It should wrap near 32767. If it
+  wraps near 65535 instead, set 65536. A wrong value makes neutral
+  holding spin the wheel.
+- Profile caps 0.8 / 1.5 / 2.5 A and the 20 s Boost / 60 s refill are
+  experimental values, not proven safe limits.
+
+FIRST POWER-UP / BENCH
+- The independent motor-power cutoff (INDEPENDENT_STOP.md) is a design
+  only. Build and test it before any ground driving.
+- Flash with Arduino-ESP32 core 3.3.12, board "ESP32 Dev Module", and the
+  WHOLE hat_firmware/robot_hat folder (not just the .ino). The firmware
+  changed in this branch, so recompile; the build ID changes.
+- Check every wheel's direction with wheels raised; fix "polarity" in
+  config.json if one spins the wrong way.
+- After every HAT reset, Boost starts EMPTY. It only fills while you are
+  NOT in Boost and all motors are 45 C or cooler (about 1 minute to fill).
+  "Boost unavailable" right after power-up is expected.
+- Leaving the switch in Boost while parked/holding still uses up Boost.
+- Arming on a slope: with the default config the wheels briefly let go
+  while switching motor modes (a few degrees of roll). Check on a ramp
+  before relying on it; "disarmed_hold": true keeps holding through arming
+  but holds current in the motors while disarmed.
+- If you will run below 0 C, check the motor temperature shown in the cold.
+  The firmware treats the motor's temperature byte as unsigned; a cold
+  motor reading ~250 C would block arming.
+- Holding gains are soft (2 mA per degree). Expect some drift on a slope
+  until they are tuned during commissioning.
+- A wheel at exactly zero during a hard turn only gets the 0.3 A
+  neutral-brake current, not the drive profile current.
+
+SOFTWARE CHECKS
+- The robot runs Python 3.14.8. Full verification must use 3.14.8
+  (see README "Run and verify").
+- On a Mac, "g++" is Apple clang. Real GNU GCC is "g++-16" (Homebrew).
+
+REPOSITORY HOUSEKEEPING (needs your OK - removal was blocked for me)
+- releases/robot-v1-baseline.zip is a byte-identical copy of the
+  baseline/original-v1 branch and can be deleted.
+- CLEANUP.md only describes the local ChatGPT folder and can be deleted.
+- Leftover files in the local ChatGPT project folder (tmp/, output/,
+  __pycache__/) are safe to delete. KEEP motor_setup.py and ddsm115.py
+  (needed to set motor IDs).
+- After the fast path passes hardware acceptance, the legacy drive can be
+  deleted (Robot class in robot_main.py, config.legacy.example.json).
+- "main" is an earlier partial upload. The real pre-v2 code is the
+  "baseline/original-v1" branch.
