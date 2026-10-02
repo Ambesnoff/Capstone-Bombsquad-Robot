@@ -57,7 +57,8 @@
       "COOLDOWN": 8192,
       "CONFIG_REJECTED": 16384,
       "SESSION_MISMATCH": 32768,
-      "SPEED_ERROR": 65536
+      "SPEED_ERROR": 65536,
+      "INSPECTION_REQUIRED": 131072
     },
     "Capability": {
       "PROFILES": 1,
@@ -79,6 +80,20 @@
       "ACTIVE": 1,
       "LIMITED": 2,
       "DISARMED": 4
+    },
+    "FaultCode": {
+      "NONE": 0,
+      "COMMAND_TIMEOUT": 1,
+      "MOTOR_TIMEOUT": 2,
+      "BAD_MOTOR_FRAME": 3,
+      "MOTOR_FAULT": 4,
+      "OVERSPEED": 5,
+      "OVERTEMPERATURE": 6,
+      "STALL": 7,
+      "ABNORMAL_CURRENT": 8,
+      "CONFIGURATION_FAULT": 9,
+      "TEMPERATURE_STALE": 10,
+      "CONTROL_PROGRESS": 11
     }
   },
   "config": [
@@ -92,7 +107,7 @@
     {
       "name": "max_current_ma",
       "type": "H",
-      "default": 1200,
+      "default": 2700,
       "min": 1,
       "max": 2700
     },
@@ -157,7 +172,7 @@
       "type": "H",
       "default": 1000,
       "min": 100,
-      "max": 10000
+      "max": 5000
     },
     {
       "name": "gentle_current_ma",
@@ -185,13 +200,13 @@
       "type": "H",
       "default": 20000,
       "min": 1000,
-      "max": 60000
+      "max": 20000
     },
     {
       "name": "boost_refill_ms",
       "type": "H",
       "default": 60000,
-      "min": 1000,
+      "min": 60000,
       "max": 65535
     },
     {
@@ -199,27 +214,27 @@
       "type": "H",
       "default": 500,
       "min": 100,
-      "max": 1000
+      "max": 500
     },
     {
       "name": "temp_boost_stale_ms",
       "type": "H",
       "default": 750,
       "min": 100,
-      "max": 1500
+      "max": 750
     },
     {
       "name": "temp_stop_stale_ms",
       "type": "H",
       "default": 1500,
       "min": 200,
-      "max": 5000
+      "max": 1500
     },
     {
       "name": "cooldown_ms",
       "type": "H",
       "default": 3000,
-      "min": 100,
+      "min": 1000,
       "max": 60000
     },
     {
@@ -261,15 +276,15 @@
       "name": "neutral_settle_ms",
       "type": "H",
       "default": 300,
-      "min": 50,
-      "max": 10000
+      "min": 100,
+      "max": 5000
     },
     {
       "name": "feedback_timeout_ms",
       "type": "H",
       "default": 150,
-      "min": 50,
-      "max": 1000
+      "min": 100,
+      "max": 250
     },
     {
       "name": "stall_target_centi_rpm",
@@ -289,7 +304,7 @@
       "name": "stall_current_ma",
       "type": "H",
       "default": 250,
-      "min": 0,
+      "min": 1,
       "max": 2700
     },
     {
@@ -297,14 +312,14 @@
       "type": "H",
       "default": 2700,
       "min": 1,
-      "max": 3000
+      "max": 2700
     },
     {
       "name": "abnormal_current_ms",
       "type": "H",
       "default": 200,
-      "min": 20,
-      "max": 5000
+      "min": 50,
+      "max": 2000
     },
     {
       "name": "abnormal_margin_ma",
@@ -317,21 +332,21 @@
       "name": "saturation_warn_ms",
       "type": "H",
       "default": 500,
-      "min": 50,
-      "max": 10000
+      "min": 100,
+      "max": 5000
     },
     {
       "name": "stop_verify_ms",
       "type": "H",
       "default": 1500,
       "min": 100,
-      "max": 10000
+      "max": 5000
     },
     {
       "name": "temp_warn_c",
       "type": "B",
       "default": 50,
-      "min": 20,
+      "min": 30,
       "max": 60
     },
     {
@@ -352,7 +367,7 @@
       "name": "temp_release_c",
       "type": "B",
       "default": 45,
-      "min": 10,
+      "min": 20,
       "max": 60
     },
     {
@@ -382,6 +397,20 @@
       "default": true,
       "min": 0,
       "max": 1
+    },
+    {
+      "name": "hold_temp_c",
+      "type": "B",
+      "default": 55,
+      "min": 30,
+      "max": 65
+    },
+    {
+      "name": "encoder_counts_per_rev",
+      "type": "I",
+      "default": 32768,
+      "min": 256,
+      "max": 65536
     }
   ],
   "status_header": [
@@ -484,6 +513,10 @@
     {
       "name": "hello_nonce",
       "type": "Q"
+    },
+    {
+      "name": "config_ack_seq",
+      "type": "H"
     }
   ],
   "wheel": [
@@ -538,6 +571,58 @@
     {
       "name": "reason_flags",
       "type": "I"
+    }
+  ],
+  "config_relations": [
+    {
+      "python": "gentle_current_ma <= normal_current_ma <= boost_current_ma",
+      "cpp": "c.gentle_current_ma <= c.normal_current_ma && c.normal_current_ma <= c.boost_current_ma",
+      "message": "Profile current caps must be Gentle <= Normal <= Boost"
+    },
+    {
+      "python": "neutral_brake_ma <= max_current_ma and hold_current_ma <= max_current_ma",
+      "cpp": "c.neutral_brake_ma <= c.max_current_ma && c.hold_current_ma <= c.max_current_ma",
+      "message": "Braking and holding caps cannot exceed the independent current ceiling"
+    },
+    {
+      "python": "temp_release_c < temp_warn_c < temp_derate_c < temp_limit_c",
+      "cpp": "c.temp_release_c < c.temp_warn_c && c.temp_warn_c < c.temp_derate_c && c.temp_derate_c < c.temp_limit_c",
+      "message": "Temperature thresholds must be release < warn < derate < stop"
+    },
+    {
+      "python": "temp_release_c + temp_hysteresis_c < temp_derate_c",
+      "cpp": "c.temp_release_c + c.temp_hysteresis_c < c.temp_derate_c",
+      "message": "Thermal release hysteresis must remain below derating"
+    },
+    {
+      "python": "temp_poll_ms < temp_boost_stale_ms < temp_stop_stale_ms",
+      "cpp": "c.temp_poll_ms < c.temp_boost_stale_ms && c.temp_boost_stale_ms < c.temp_stop_stale_ms",
+      "message": "Temperature timing must be poll < Boost stale < stop stale"
+    },
+    {
+      "python": "boost_refill_ms >= boost_capacity_ms",
+      "cpp": "c.boost_refill_ms >= c.boost_capacity_ms",
+      "message": "Boost refill time must be at least its capacity duration"
+    },
+    {
+      "python": "stall_speed_centi_rpm < stall_target_centi_rpm",
+      "cpp": "c.stall_speed_centi_rpm < c.stall_target_centi_rpm",
+      "message": "Stall measured speed threshold must be below its target threshold"
+    },
+    {
+      "python": "control_period_ms < feedback_timeout_ms < watchdog_ms",
+      "cpp": "c.control_period_ms < c.feedback_timeout_ms && c.feedback_timeout_ms < c.watchdog_ms",
+      "message": "Timing must be control period < feedback timeout < command watchdog"
+    },
+    {
+      "python": "not disarmed_hold_enabled or hold_enabled",
+      "cpp": "!c.disarmed_hold_enabled || c.hold_enabled",
+      "message": "Disarmed holding requires holding to be enabled"
+    },
+    {
+      "python": "temp_release_c < hold_temp_c <= temp_limit_c",
+      "cpp": "c.temp_release_c < c.hold_temp_c && c.hold_temp_c <= c.temp_limit_c",
+      "message": "Holding thermal limit must be above release and at or below stop"
     }
   ]
 }

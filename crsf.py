@@ -369,8 +369,8 @@ class CRSFTransmit:
         return self
 
     def publish(self, frames: tuple[bytes, ...]) -> None:
-        if len(frames) > 8 or any(not isinstance(frame, bytes) or len(frame) > MAX_FRAME_SIZE for frame in frames):
-            raise ValueError("Telemetry batch exceeds eight CRSF frames")
+        if len(frames) > 9 or any(not isinstance(frame, bytes) or len(frame) > MAX_FRAME_SIZE for frame in frames):
+            raise ValueError("Telemetry batch exceeds nine CRSF frames")
         with self._lock:
             if self._pending is not None or self.error is not None or self._stop.is_set():
                 self.dropped_batches += 1

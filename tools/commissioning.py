@@ -52,8 +52,8 @@ def qualification_errors(record: dict) -> list[str]:
     ceiling = record.get("effective_current_ceiling_a")
     if not number(ceiling):
         errors.append("Record the effective current ceiling")
-    elif ceiling > 1.2 and record.get("higher_current_acceptance") is not True:
-        errors.append("Separate measured electrical/thermal acceptance required above 1.2 A")
+    elif (ceiling > 0.8 or record.get("requested_mode") in ("NORMAL", "BOOST")) and record.get("higher_current_acceptance") is not True:
+        errors.append("Separate measured electrical/thermal acceptance required for Normal/Boost")
     if record.get("unresolved_conditions"):
         errors.append("Unresolved conditions must be resolved or explicitly constrain a separate release")
     return errors

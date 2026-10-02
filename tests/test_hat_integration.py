@@ -66,8 +66,10 @@ class SimulatedHatSerial:
 
 
 class LiveRadio:
+    throttle = 172
+
     def snapshot(self) -> CRSFSnapshot:
-        return snapshot(arm=1811, throttle=1811, now=time.monotonic() - 0.001)
+        return snapshot(arm=1811, throttle=self.throttle, now=time.monotonic() - 0.001)
 
 
 class HatIntegrationTests(unittest.TestCase):
@@ -88,6 +90,7 @@ class HatIntegrationTests(unittest.TestCase):
             robot.open_hat()
             try:
                 robot.prepare_current_mode()
+                robot.radio.throttle = 1811
                 robot.drive(drive_request(robot.radio.snapshot(), cfg))
             finally:
                 robot.stop_all()

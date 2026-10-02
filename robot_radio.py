@@ -1,13 +1,7 @@
 """Operator profile intent and timestamped three-position switch selection."""
 from __future__ import annotations
-from enum import IntEnum
+from protocol_defs import Profile
 from robot_config import ProfileSettings
-
-
-class Profile(IntEnum):
-    GENTLE = 0
-    NORMAL = 1
-    BOOST = 2
 
 
 def calibrated_profile(raw: int, config: ProfileSettings) -> Profile | None:

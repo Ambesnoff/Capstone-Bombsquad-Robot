@@ -1,6 +1,6 @@
 # What can be deleted
 
-No files have been deleted by this implementation. Updated working files remain where they were. `sources/` contains synced read-only references: do not edit, move, or delete those files from this mirror.
+No files have been deleted by this implementation. Updated files keep their repository paths in the separate **gpt/architecture-v2** checkout; the previous project folder is no longer being edited. `sources/` contains synced read-only references: do not edit, move, or delete those files from this mirror.
 
 ## Safe to remove now
 

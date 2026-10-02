@@ -20,7 +20,7 @@ from typing import Any, Mapping, Sequence
 from protocol_defs import (
     SYNC, VERSION, MAX_PAYLOAD, STATUS_LENGTH, FIRMWARE_MAX_CURRENT_MA,
     FrameType, HatState, Profile, StopState, ConfigResult, Reason, Capability,
-    Validity, HoldFlag, CONFIG_FIELDS, CONFIG_SPEC, CONFIG_STRUCT,
+    Validity, HoldFlag, FaultCode, CONFIG_FIELDS, CONFIG_SPEC, CONFIG_STRUCT, validate_config,
     STATUS_HEADER_FIELDS, STATUS_HEADER_STRUCT, WHEEL_FIELDS, WHEEL_STRUCT,
     CONFIG_PREFIX, ARM_STRUCT, TARGETS_STRUCT,
 )
@@ -73,6 +73,11 @@ class FrameParser:
         self.bad_version = 0
         self.bad_length = 0
         self.discarded_bytes = 0
+
+    def reset(self) -> None:
+        """Drop any partial frame; the counters stay cumulative."""
+        self.discarded_bytes += len(self.buffer)
+        self.buffer.clear()
 
     def feed(self, data: bytes) -> list[Frame]:
         self.buffer.extend(data)
@@ -185,6 +190,7 @@ class FastStatus:
     hold_flags: HoldFlag = HoldFlag(0)
     fault_wheel: int = 0
     hello_nonce: int = 0
+    config_ack_seq: int = 0
 
     @property
     def accepted_seq(self) -> int:
@@ -219,9 +225,10 @@ def decode_status(payload: bytes, received_at: float | None = None) -> FastStatu
     for field, enum in (("state", HatState), ("stop_state", StopState),
                         ("requested_profile", Profile), ("applied_profile", Profile),
                         ("config_result", ConfigResult), ("reason_flags", Reason),
-                        ("capabilities", Capability), ("hold_flags", HoldFlag)):
+                        ("capabilities", Capability), ("hold_flags", HoldFlag),
+                        ("fault_code", FaultCode)):
         values[field] = enum(values[field])
-    if values["fault_wheel"] > 4 or values["fault_code"] > 9:
+    if values["fault_wheel"] > 4:
         raise ValueError("Invalid fault identity in STATUS")
     if values["boost_remaining_ms"] > values["boost_capacity_ms"]:
         raise ValueError("Invalid Boost budget in STATUS")
@@ -233,7 +240,9 @@ def decode_status(payload: bytes, received_at: float | None = None) -> FastStatu
             raise ValueError("Unknown wheel validity flags")
         temperature = raw["temp_c"] if valid & Validity.TEMPERATURE else None
         if temperature is not None and not -40 <= temperature <= 125:
-            raise ValueError("Invalid motor temperature")
+            # An implausible sensor value hides only this wheel's temperature;
+            # the HAT's own fault and reason flags in this STATUS stay visible.
+            temperature, valid = None, valid & ~Validity.TEMPERATURE
         if raw["effective_cap_ma"] > FIRMWARE_MAX_CURRENT_MA or raw["hold_cap_ma"] > FIRMWARE_MAX_CURRENT_MA:
             raise ValueError("Motor cap exceeds firmware hard ceiling")
         if abs(raw["target_centi_rpm"]) > 20000:
@@ -259,9 +268,9 @@ def _uint16(value: int, name: str) -> int:
 
 @dataclass(frozen=True)
 class FastConfig:
-    # Candidate profiles may exceed this independent, conservatively loaded ceiling.
+    # Profiles are bounded by the independently enforced firmware ceiling.
     max_rpm: int = 40
-    max_current_ma: int = 1200
+    max_current_ma: int = 2700
     neutral_brake_ma: int = 300
     accel_rpm_s: int = 120
     decel_rpm_s: int = 180
@@ -303,36 +312,11 @@ class FastConfig:
     hold_enabled: bool = True
     disarmed_hold_enabled: bool = False
     stall_enabled: bool = True
+    hold_temp_c: int = 55
+    encoder_counts_per_rev: int = 32768
 
     def payload(self) -> bytes:
-        for field in CONFIG_SPEC:
-            name = field["name"]
-            value = getattr(self, name)
-            if isinstance(field["default"], bool):
-                if not isinstance(value, bool):
-                    raise ValueError(f"{name} must be a boolean")
-            elif isinstance(value, bool) or not isinstance(value, int):
-                raise ValueError(f"{name} must be an integer")
-            if not field["min"] <= value <= field["max"]:
-                raise ValueError(f"{name} must be within {field['min']}..{field['max']}")
-        if not self.gentle_current_ma <= self.normal_current_ma <= self.boost_current_ma:
-            raise ValueError("Profile current caps must be Gentle <= Normal <= Boost")
-        if self.neutral_brake_ma > self.max_current_ma or self.hold_current_ma > self.max_current_ma:
-            raise ValueError("Braking and holding caps cannot exceed the independent current ceiling")
-        if not self.temp_release_c < self.temp_warn_c < self.temp_derate_c < self.temp_limit_c:
-            raise ValueError("Temperature thresholds must be release < warn < derate < stop")
-        if self.temp_release_c + self.temp_hysteresis_c >= self.temp_derate_c:
-            raise ValueError("Thermal release hysteresis must remain below derating")
-        if not self.temp_poll_ms < self.temp_boost_stale_ms < self.temp_stop_stale_ms:
-            raise ValueError("Temperature timing must be poll < Boost stale < stop stale")
-        if self.boost_refill_ms < self.boost_capacity_ms:
-            raise ValueError("Boost refill time must be at least its capacity duration")
-        if self.stall_speed_centi_rpm >= self.stall_target_centi_rpm:
-            raise ValueError("Stall measured speed threshold must be below its target threshold")
-        if self.control_period_ms >= self.feedback_timeout_ms or self.feedback_timeout_ms >= self.watchdog_ms:
-            raise ValueError("Timing must be control period < feedback timeout < command watchdog")
-        if self.disarmed_hold_enabled and not self.hold_enabled:
-            raise ValueError("Disarmed holding requires holding to be enabled")
+        validate_config({name: getattr(self, name) for name in CONFIG_FIELDS})
         return CONFIG_STRUCT.pack(*(getattr(self, name) for name in CONFIG_FIELDS))
 
     @property
@@ -351,6 +335,7 @@ class FastStats:
     bad_status: int
     old_status: int
     discarded_bytes: int
+    backlog_discards: int
     last_rtt_ms: float | None
     max_rtt_ms: float | None
     mean_rtt_ms: float | None
@@ -434,6 +419,7 @@ class FastHat:
         self._max_status_interval_ms: float | None = None
         self._bad_status = 0
         self._old_status = 0
+        self._backlog_discards = 0
         try:
             # Data left by a prior host session must not count as live status.
             self.serial.reset_input_buffer()
@@ -448,12 +434,15 @@ class FastHat:
             try:
                 pending = int(getattr(self.serial, "in_waiting", 0) or 0)
                 if pending > MAX_STATUS_BACKLOG:
+                    # Reports queued while this reader was delayed are old: drop
+                    # them unread and keep reading. Motion requires a new ARM.
                     self.serial.reset_input_buffer()
                     with self._condition:
-                        self._reader_error = "HAT status backlog discarded"
+                        self._parser.reset()
+                        self._backlog_discards += 1
                         self._stop_flag.set()
                         self._condition.notify_all()
-                    return
+                    continue
                 waiting = max(1, pending)
                 chunk = self.serial.read(waiting)
             except Exception as exc:
@@ -685,7 +674,7 @@ class FastHat:
                     if status.fault_code and kind not in (FrameType.STOP, FrameType.HELLO):
                         self._stop_flag.set()
                         raise FastHatError(f"HAT fault {status.fault_code} while waiting for {kind.name}")
-                    if status.ack_seq == sequence:
+                    if status.ack_seq == sequence or (kind == FrameType.CONFIG and status.config_ack_seq == sequence):
                         if kind in (FrameType.ARM, FrameType.TARGETS) and not status.motion_enabled:
                             self._stop_flag.set()
                             raise FastHatError(f"HAT ACKed {kind.name} without entering ARMED state")
@@ -696,8 +685,11 @@ class FastHat:
                                 raise FastHatError("HAT is missing required protocol v2 capabilities")
                         if kind == FrameType.CONFIG:
                             config = self._sent_config[sequence]
-                            if (status.motion_enabled or not status.stop_confirmed
-                                    or status.config_result != ConfigResult.APPLIED
+                            if status.config_result != ConfigResult.APPLIED:
+                                self._stop_flag.set()
+                                raise FastHatError(f"HAT rejected CONFIG ({status.config_result.name})")
+                            if (status.config_ack_seq != sequence or status.motion_enabled or not status.stop_confirmed
+                                    or status.applied_seq != sequence
                                     or status.config_id != config.configuration_id):
                                 self._stop_flag.set()
                                 raise FastHatError("HAT did not apply the exact stopped CONFIG")
@@ -707,6 +699,9 @@ class FastHat:
                             self._stop_flag.set()
                             raise FastHatError(f"HAT ACKed {kind.name} while still ARMED")
                         if kind == FrameType.ARM:
+                            if status.applied_seq != sequence:
+                                self._stop_flag.set()
+                                raise FastHatError("HAT ARM acknowledgment does not confirm application")
                             self._stop_flag.clear()
                         return status
                 remaining = deadline - time.monotonic()
@@ -723,7 +718,7 @@ class FastHat:
                 status_frames=self._status_frames, bad_crc=parser.bad_crc,
                 bad_version=parser.bad_version, bad_length=parser.bad_length,
                 bad_status=self._bad_status, old_status=self._old_status,
-                discarded_bytes=parser.discarded_bytes,
+                discarded_bytes=parser.discarded_bytes, backlog_discards=self._backlog_discards,
                 last_rtt_ms=self._last_rtt_ms, max_rtt_ms=self._max_rtt_ms,
                 mean_rtt_ms=(self._rtt_sum_ms / self._rtt_count if self._rtt_count else None),
                 last_status_interval_ms=self._last_status_interval_ms,

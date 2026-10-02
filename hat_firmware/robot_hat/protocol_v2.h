@@ -61,6 +61,7 @@ enum class Reason : uint32_t {
   CONFIG_REJECTED = 16384,
   SESSION_MISMATCH = 32768,
   SPEED_ERROR = 65536,
+  INSPECTION_REQUIRED = 131072,
 };
 enum class Capability : uint32_t {
   PROFILES = 1,
@@ -82,6 +83,20 @@ enum class HoldFlag : uint32_t {
   ACTIVE = 1,
   LIMITED = 2,
   DISARMED = 4,
+};
+enum class FaultCode : uint8_t {
+  NONE = 0,
+  COMMAND_TIMEOUT = 1,
+  MOTOR_TIMEOUT = 2,
+  BAD_MOTOR_FRAME = 3,
+  MOTOR_FAULT = 4,
+  OVERSPEED = 5,
+  OVERTEMPERATURE = 6,
+  STALL = 7,
+  ABNORMAL_CURRENT = 8,
+  CONFIGURATION_FAULT = 9,
+  TEMPERATURE_STALE = 10,
+  CONTROL_PROGRESS = 11,
 };
 #pragma pack(push, 1)
 struct Config {
@@ -128,8 +143,10 @@ struct Config {
   uint8_t hold_enabled;
   uint8_t disarmed_hold_enabled;
   uint8_t stall_enabled;
+  uint8_t hold_temp_c;
+  uint32_t encoder_counts_per_rev;
 };
-static_assert(sizeof(Config) == 78, "Config wire size");
+static_assert(sizeof(Config) == 83, "Config wire size");
 static_assert(offsetof(Config, max_rpm) == 0, "Config.max_rpm offset");
 static_assert(offsetof(Config, max_current_ma) == 2, "Config.max_current_ma offset");
 static_assert(offsetof(Config, neutral_brake_ma) == 4, "Config.neutral_brake_ma offset");
@@ -173,6 +190,8 @@ static_assert(offsetof(Config, temp_hysteresis_c) == 74, "Config.temp_hysteresis
 static_assert(offsetof(Config, hold_enabled) == 75, "Config.hold_enabled offset");
 static_assert(offsetof(Config, disarmed_hold_enabled) == 76, "Config.disarmed_hold_enabled offset");
 static_assert(offsetof(Config, stall_enabled) == 77, "Config.stall_enabled offset");
+static_assert(offsetof(Config, hold_temp_c) == 78, "Config.hold_temp_c offset");
+static_assert(offsetof(Config, encoder_counts_per_rev) == 79, "Config.encoder_counts_per_rev offset");
 struct StatusHeader {
   uint64_t boot_id;
   uint64_t host_session;
@@ -199,8 +218,9 @@ struct StatusHeader {
   uint8_t hold_flags;
   uint8_t fault_wheel;
   uint64_t hello_nonce;
+  uint16_t config_ack_seq;
 };
-static_assert(sizeof(StatusHeader) == 82, "StatusHeader wire size");
+static_assert(sizeof(StatusHeader) == 84, "StatusHeader wire size");
 static_assert(offsetof(StatusHeader, boot_id) == 0, "StatusHeader.boot_id offset");
 static_assert(offsetof(StatusHeader, host_session) == 8, "StatusHeader.host_session offset");
 static_assert(offsetof(StatusHeader, capabilities) == 16, "StatusHeader.capabilities offset");
@@ -226,6 +246,7 @@ static_assert(offsetof(StatusHeader, cooldown_remaining_ms) == 68, "StatusHeader
 static_assert(offsetof(StatusHeader, hold_flags) == 72, "StatusHeader.hold_flags offset");
 static_assert(offsetof(StatusHeader, fault_wheel) == 73, "StatusHeader.fault_wheel offset");
 static_assert(offsetof(StatusHeader, hello_nonce) == 74, "StatusHeader.hello_nonce offset");
+static_assert(offsetof(StatusHeader, config_ack_seq) == 82, "StatusHeader.config_ack_seq offset");
 struct WheelStatus {
   int16_t target_centi_rpm;
   int16_t rpm;
@@ -261,13 +282,121 @@ struct ArmPayload { Session session; uint32_t config_id; };
 struct TargetsPayload { Session session; int16_t target_centi_rpm[4]; uint8_t profile; };
 struct StatusPayload { StatusHeader header; WheelStatus wheels[4]; };
 #pragma pack(pop)
-static_assert(sizeof(ConfigPayload) == 98, "CONFIG size");
+static_assert(sizeof(ConfigPayload) == 103, "CONFIG size");
 static_assert(sizeof(ArmPayload) == 20, "ARM size");
 static_assert(sizeof(TargetsPayload) == 25, "TARGETS size");
-static_assert(sizeof(StatusPayload) == 182, "STATUS size");
+static_assert(sizeof(StatusPayload) == 184, "STATUS size");
 constexpr uint16_t STATUS_LENGTH = sizeof(StatusPayload);
 inline bool sequenceNewer(uint16_t candidate, uint16_t boundary) {
   const uint16_t advance = uint16_t(candidate - boundary);
   return advance > 0 && advance < 0x8000;
+}
+inline Config defaultConfig() {
+  return Config{
+    40, // max_rpm
+    2700, // max_current_ma
+    300, // neutral_brake_ma
+    120, // accel_rpm_s
+    180, // decel_rpm_s
+    20, // kp_ma_per_rpm
+    4, // ki_ma_per_rpm_s
+    0, // ff_ma_per_rpm_s
+    300, // watchdog_ms
+    15, // control_period_ms
+    1000, // stall_time_ms
+    800, // gentle_current_ma
+    1500, // normal_current_ma
+    2500, // boost_current_ma
+    20000, // boost_capacity_ms
+    60000, // boost_refill_ms
+    500, // temp_poll_ms
+    750, // temp_boost_stale_ms
+    1500, // temp_stop_stale_ms
+    3000, // cooldown_ms
+    1000, // cap_ramp_ma_s
+    300, // hold_current_ma
+    2, // hold_kp_ma_per_degree
+    1, // hold_ki_ma_per_degree_s
+    20, // hold_damping_ma_per_rpm
+    300, // neutral_settle_ms
+    150, // feedback_timeout_ms
+    800, // stall_target_centi_rpm
+    200, // stall_speed_centi_rpm
+    250, // stall_current_ma
+    2700, // abnormal_current_ma
+    200, // abnormal_current_ms
+    400, // abnormal_margin_ma
+    500, // saturation_warn_ms
+    1500, // stop_verify_ms
+    50, // temp_warn_c
+    55, // temp_derate_c
+    65, // temp_limit_c
+    45, // temp_release_c
+    3, // temp_hysteresis_c
+    1, // hold_enabled
+    0, // disarmed_hold_enabled
+    1, // stall_enabled
+    55, // hold_temp_c
+    32768, // encoder_counts_per_rev
+  };
+}
+inline bool validConfig(const Config &c) {
+  // Bounds already guaranteed by a field's C type are omitted (GCC -Wtype-limits).
+  if (c.max_rpm < 1 || c.max_rpm > 200) return false;
+  if (c.max_current_ma < 1 || c.max_current_ma > 2700) return false;
+  if (c.neutral_brake_ma > 2700) return false;
+  if (c.accel_rpm_s < 1 || c.accel_rpm_s > 5000) return false;
+  if (c.decel_rpm_s < 1 || c.decel_rpm_s > 5000) return false;
+  if (c.kp_ma_per_rpm > 1000) return false;
+  if (c.ki_ma_per_rpm_s > 1000) return false;
+  if (c.ff_ma_per_rpm_s > 1000) return false;
+  if (c.watchdog_ms < 100 || c.watchdog_ms > 1000) return false;
+  if (c.control_period_ms < 10 || c.control_period_ms > 100) return false;
+  if (c.stall_time_ms < 100 || c.stall_time_ms > 5000) return false;
+  if (c.gentle_current_ma < 1 || c.gentle_current_ma > 2700) return false;
+  if (c.normal_current_ma < 1 || c.normal_current_ma > 2700) return false;
+  if (c.boost_current_ma < 1 || c.boost_current_ma > 2700) return false;
+  if (c.boost_capacity_ms < 1000 || c.boost_capacity_ms > 20000) return false;
+  if (c.boost_refill_ms < 60000) return false;
+  if (c.temp_poll_ms < 100 || c.temp_poll_ms > 500) return false;
+  if (c.temp_boost_stale_ms < 100 || c.temp_boost_stale_ms > 750) return false;
+  if (c.temp_stop_stale_ms < 200 || c.temp_stop_stale_ms > 1500) return false;
+  if (c.cooldown_ms < 1000 || c.cooldown_ms > 60000) return false;
+  if (c.cap_ramp_ma_s < 1 || c.cap_ramp_ma_s > 10000) return false;
+  if (c.hold_current_ma > 2700) return false;
+  if (c.hold_kp_ma_per_degree > 1000) return false;
+  if (c.hold_ki_ma_per_degree_s > 1000) return false;
+  if (c.hold_damping_ma_per_rpm > 1000) return false;
+  if (c.neutral_settle_ms < 100 || c.neutral_settle_ms > 5000) return false;
+  if (c.feedback_timeout_ms < 100 || c.feedback_timeout_ms > 250) return false;
+  if (c.stall_target_centi_rpm < 100 || c.stall_target_centi_rpm > 20000) return false;
+  if (c.stall_speed_centi_rpm > 20000) return false;
+  if (c.stall_current_ma < 1 || c.stall_current_ma > 2700) return false;
+  if (c.abnormal_current_ma < 1 || c.abnormal_current_ma > 2700) return false;
+  if (c.abnormal_current_ms < 50 || c.abnormal_current_ms > 2000) return false;
+  if (c.abnormal_margin_ma > 1000) return false;
+  if (c.saturation_warn_ms < 100 || c.saturation_warn_ms > 5000) return false;
+  if (c.stop_verify_ms < 100 || c.stop_verify_ms > 5000) return false;
+  if (c.temp_warn_c < 30 || c.temp_warn_c > 60) return false;
+  if (c.temp_derate_c < 30 || c.temp_derate_c > 65) return false;
+  if (c.temp_limit_c < 40 || c.temp_limit_c > 70) return false;
+  if (c.temp_release_c < 20 || c.temp_release_c > 60) return false;
+  if (c.temp_hysteresis_c < 1 || c.temp_hysteresis_c > 10) return false;
+  if (c.hold_enabled > 1) return false;
+  if (c.disarmed_hold_enabled > 1) return false;
+  if (c.stall_enabled > 1) return false;
+  if (c.hold_temp_c < 30 || c.hold_temp_c > 65) return false;
+  if (c.encoder_counts_per_rev < 256 || c.encoder_counts_per_rev > 65536) return false;
+  if (!(c.gentle_current_ma <= c.normal_current_ma && c.normal_current_ma <= c.boost_current_ma)) return false;
+  if (!(c.neutral_brake_ma <= c.max_current_ma && c.hold_current_ma <= c.max_current_ma)) return false;
+  if (!(c.temp_release_c < c.temp_warn_c && c.temp_warn_c < c.temp_derate_c && c.temp_derate_c < c.temp_limit_c)) return false;
+  if (!(c.temp_release_c + c.temp_hysteresis_c < c.temp_derate_c)) return false;
+  if (!(c.temp_poll_ms < c.temp_boost_stale_ms && c.temp_boost_stale_ms < c.temp_stop_stale_ms)) return false;
+  if (!(c.boost_refill_ms >= c.boost_capacity_ms)) return false;
+  if (!(c.stall_speed_centi_rpm < c.stall_target_centi_rpm)) return false;
+  if (!(c.control_period_ms < c.feedback_timeout_ms && c.feedback_timeout_ms < c.watchdog_ms)) return false;
+  if (!(!c.disarmed_hold_enabled || c.hold_enabled)) return false;
+  if (!(c.temp_release_c < c.hold_temp_c && c.hold_temp_c <= c.temp_limit_c)) return false;
+  return true;
 }
 } // namespace ProtocolV2

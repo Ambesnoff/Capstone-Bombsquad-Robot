@@ -78,7 +78,6 @@ class ProfileSettings:
     gentle_a: float = 0.8
     normal_a: float = 1.5
     boost_a: float = 2.5
-    independent_ceiling_a: float = 1.2
     boost_capacity_s: float = 20.0
     boost_refill_s: float = 60.0
     cap_ramp_a_s: float = 1.0
@@ -132,6 +131,7 @@ class ProtectionSettings:
     stall_enabled: bool = True
     temp_poll_ms: int = 500
     feedback_timeout_ms: int = 150
+    encoder_counts_per_rev: int = 32768
     neutral_settle_ms: int = 300
     disarmed_hold: bool = False
     stall_target_rpm: int = 8
@@ -155,7 +155,7 @@ class ProtectionSettings:
             elif key.endswith("_a"):
                 result[key] = _number(value, f"protection.{key}", 0 if key == "hold_current_a" else 0.1, 2.7)
             else:
-                upper = 65000 if key.endswith("_ms") else 100 if key.endswith("_pct") else 2000 if "_ma_per_" in key else 200 if key.endswith("_rpm") else 100
+                upper = 65536 if key == "encoder_counts_per_rev" else 65000 if key.endswith("_ms") else 100 if key.endswith("_pct") else 2000 if "_ma_per_" in key else 200 if key.endswith("_rpm") else 100
                 result[key] = _integer(value, f"protection.{key}", 0, upper)
         if not result["temp_release_c"] < result["temp_warn_c"] < result["temp_derate_c"] < temp_limit_c:
             raise ValueError("Temperature thresholds must be release < warning < derating < stop")
@@ -244,17 +244,22 @@ class Settings:
         if backend == "fast" and hat_baud != 230400:
             raise ValueError("Fast HAT firmware uses 230400 baud on the Pi connection")
         profiles = ProfileSettings.from_dict(data.get("profiles", {}))
+        # Fast backend: max_current_a is the single independent HAT current ceiling.
         max_current = _number(data["max_current_a"], "max_current_a", 0.1, 1.2 if backend == "legacy" else 2.7)
         brake = _number(data["neutral_braking_current_a"], "neutral_braking_current_a", 0, 2.7)
-        if brake > (min(max_current, profiles.independent_ceiling_a) if backend == "fast" else max_current):
-            raise ValueError("neutral_braking_current_a cannot exceed max_current_a or the independent ceiling")
+        if brake > max_current:
+            raise ValueError("neutral_braking_current_a cannot exceed max_current_a")
         temp_limit = _integer(data.get("temp_limit_c", 65), "temp_limit_c", 40, 70)
-        protection = ProtectionSettings.from_dict(data.get("protection", {}), temp_limit, profiles.independent_ceiling_a)
+        protection = ProtectionSettings.from_dict(data.get("protection", {}), temp_limit, max_current)
         motor_timeout = _number(data["motor_timeout_s"], "motor_timeout_s", 0.05, 1)
-        heartbeat = _integer(data["hat_heartbeat_ms"], "hat_heartbeat_ms", 100, 2000)
-        if heartbeat / 1000 <= motor_timeout:
+        if backend == "legacy":
+            loop_period, heartbeat = data["loop_period_s"], data["hat_heartbeat_ms"]
+        else:  # Only the legacy factory-firmware drive uses these two settings.
+            loop_period, heartbeat = data.get("loop_period_s", 0.1), data.get("hat_heartbeat_ms", 600)
+        heartbeat = _integer(heartbeat, "hat_heartbeat_ms", 100, 2000)
+        if backend == "legacy" and heartbeat / 1000 <= motor_timeout:
             raise ValueError("HAT heartbeat must exceed motor transaction timeout")
-        return cls(
+        candidate = cls(
             motor_port=data["motor_port"], radio_port=data["radio_port"], wheels=tuple(wheels),
             channels=Channels.from_dict(data["channels"], backend), motor_backend=backend, hat_baud=hat_baud,
             radio_baud=_integer(data.get("radio_baud", 420000), "radio_baud", 9600, 1000000),
@@ -265,7 +270,7 @@ class Settings:
             steering_gain=_number(data["steering_gain"], "steering_gain", 0, 1),
             kp_a_per_rpm=_number(data["kp_a_per_rpm"], "kp_a_per_rpm", 0, 1),
             ki_a_per_rpm_s=_number(data["ki_a_per_rpm_s"], "ki_a_per_rpm_s", 0, 1),
-            loop_period_s=_number(data["loop_period_s"], "loop_period_s", 0.05, 1),
+            loop_period_s=_number(loop_period, "loop_period_s", 0.05, 1),
             radio_timeout_s=_number(data["radio_timeout_s"], "radio_timeout_s", 0.1, 2),
             link_timeout_s=_number(data["link_timeout_s"], "link_timeout_s", 0.2, 3),
             motor_timeout_s=motor_timeout, hat_heartbeat_ms=heartbeat,
@@ -281,6 +286,9 @@ class Settings:
             telemetry_queue_rows=_integer(data.get("telemetry_queue_rows", 32), "telemetry_queue_rows", 1, 4096),
             live_status_hz=_number(data.get("live_status_hz", 1), "live_status_hz", 0.1, 10),
         )
+        if backend == "fast":
+            hat_configuration(candidate).payload()
+        return candidate
 
     def to_dict(self) -> dict[str, Any]:
         result = asdict(self)
@@ -297,3 +305,43 @@ class Settings:
 def load_settings(path: Path) -> Settings:
     with path.open(encoding="utf-8") as file:
         return Settings.from_dict(json.load(file))
+
+
+def hat_configuration(settings: Settings) -> FastConfig:
+    """Validate the whole firmware candidate before any serial connection opens."""
+    from fast_hat import FastConfig
+    p, protection = settings.profiles, settings.protection
+    cfg = FastConfig(
+        max_rpm=settings.max_rpm,
+        max_current_ma=round(settings.max_current_a * 1000),
+        neutral_brake_ma=round(settings.neutral_braking_current_a * 1000),
+        accel_rpm_s=round(settings.acceleration_rpm_s), decel_rpm_s=round(settings.deceleration_rpm_s),
+        kp_ma_per_rpm=round(settings.kp_a_per_rpm * 1000),
+        ki_ma_per_rpm_s=round(settings.ki_a_per_rpm_s * 1000),
+        ff_ma_per_rpm_s=settings.ff_ma_per_rpm_s, watchdog_ms=settings.fast_watchdog_ms,
+        control_period_ms=settings.fast_period_ms, stall_time_ms=settings.stall_time_ms,
+        temp_limit_c=settings.temp_limit_c,
+        gentle_current_ma=round(p.gentle_a * 1000), normal_current_ma=round(p.normal_a * 1000),
+        boost_current_ma=round(p.boost_a * 1000), boost_capacity_ms=round(p.boost_capacity_s * 1000),
+        boost_refill_ms=round(p.boost_refill_s * 1000), cap_ramp_ma_s=round(p.cap_ramp_a_s * 1000),
+        temp_poll_ms=protection.temp_poll_ms, temp_boost_stale_ms=protection.temp_boost_age_ms,
+        temp_stop_stale_ms=protection.temp_stop_age_ms, cooldown_ms=protection.cooldown_dwell_ms,
+        hold_current_ma=round(protection.hold_current_a * 1000),
+        hold_kp_ma_per_degree=protection.hold_kp_ma_per_degree,
+        hold_ki_ma_per_degree_s=protection.hold_ki_ma_per_degree_s,
+        hold_damping_ma_per_rpm=protection.hold_damping_ma_per_rpm,
+        neutral_settle_ms=protection.neutral_settle_ms, feedback_timeout_ms=protection.feedback_timeout_ms,
+        stall_target_centi_rpm=protection.stall_target_rpm * 100,
+        stall_speed_centi_rpm=protection.stall_speed_rpm * 100,
+        stall_current_ma=round(protection.stall_current_a * 1000),
+        abnormal_current_ma=round(protection.abnormal_current_a * 1000),
+        abnormal_current_ms=protection.abnormal_current_ms,
+        abnormal_margin_ma=round(protection.abnormal_margin_a * 1000),
+        saturation_warn_ms=protection.saturation_warn_ms, stop_verify_ms=protection.stop_verify_ms,
+        temp_warn_c=protection.temp_warn_c, temp_derate_c=protection.temp_derate_c,
+        temp_release_c=protection.temp_release_c, temp_hysteresis_c=protection.temp_hysteresis_c,
+        encoder_counts_per_rev=protection.encoder_counts_per_rev, hold_temp_c=protection.hold_temp_c, hold_enabled=protection.hold_enabled, disarmed_hold_enabled=protection.disarmed_hold,
+        stall_enabled=protection.stall_enabled,
+    )
+    cfg.payload()
+    return cfg

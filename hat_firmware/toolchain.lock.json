@@ -1,0 +1,15 @@
+{
+  "cli": "arduino-cli",
+  "board": "esp32:esp32:esp32",
+  "arduino_esp32_core": "3.3.12",
+  "esp_idf": "5.5.5",
+  "host_uart_baud": 230400,
+  "motor_uart_baud": 115200,
+  "motor_rx_pin": 18,
+  "motor_tx_pin": 19,
+  "watchdog_timeout_ms": 1000,
+  "watchdog_feed": "completed full control sweep, stop operation or bounded all-wheel inhibited polling",
+  "build_command": "arduino-cli compile --fqbn esp32:esp32:esp32 hat_firmware/robot_hat",
+  "identity_command": "python3 hat_firmware/generate_build_identity.py",
+  "watchdog": "ESP-IDF task-watchdog named user, trigger_panic=true; panic configuration must reboot"
+}

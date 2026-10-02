@@ -10,17 +10,17 @@ Two different devices receive software:
 | HAT's ESP32 | The custom **robot_hat.ino** firmware | Upload with Arduino IDE through the HAT's **ESP32-USB** port |
 | Pocket and XR4 | Their existing EdgeTX/ExpressLRS software | Create a model, set channels, choose an ELRS mode, and bind |
 
-The HAT firmware has compiled and the program's software tests have passed. It has **not** been tested on the assembled four-wheel robot yet. Keep all four wheels raised and a physical power cutoff within reach for the first powered checks.
+This is the protocol v2 commissioning build. Software verification is recorded in **IMPLEMENTATION_STATUS.md**. It has **not** been qualified on the assembled four-wheel robot yet. Keep all four wheels raised and a physical power cutoff within reach for the first powered checks.
 
 ## 1. Find the files on the Mac
 
 In Finder, press **Command+Shift+G**, paste this path, then press Return:
 
 ~~~text
-/Users/ambesnoff/.codex/.chatgpt-projects/g-p-6abd17e11e9c81919d539f1e77cd6853
+/Users/ambesnoff/.codex/.chatgpt-projects/g-p-6abd17e11e9c81919d539f1e77cd6853/github/Capstone-Bombsquad-Robot
 ~~~
 
-**Command+Shift+.** toggles hidden files. The Pi files are in that folder. The HAT sketch is **hat_firmware/robot_hat/robot_hat.ino**.
+**Command+Shift+.** toggles hidden files. This is a Git checkout on **gpt/architecture-v2**. Your repository's **main** is left unchanged. The Pi files are in that folder. The HAT sketch is **hat_firmware/robot_hat/robot_hat.ino**.
 
 You will need a microSD card and reader, the Mac and Pi on the same network, a USB-C **data** cable for the HAT, Arduino IDE 2, the Pocket's supplied antenna and 18650 cells, and both XR4 antennas.
 
@@ -77,12 +77,13 @@ The first check should show **/dev/ttyAMA0**; the second should find **/dev/ttyA
 
 ## 4. Copy the drive program to the Pi
 
-Use a **Mac Terminal** window for this block. It copies only the eight files the Pi needs:
+Use a **Mac Terminal** window for this block. It copies runtime modules, factory motor-ID tools, the example config, and deployment files:
 
 ~~~sh
-ROBOT_PROJECT="$HOME/.codex/.chatgpt-projects/g-p-6abd17e11e9c81919d539f1e77cd6853"
+ROBOT_PROJECT="$HOME/.codex/.chatgpt-projects/g-p-6abd17e11e9c81919d539f1e77cd6853/github/Capstone-Bombsquad-Robot"
 ssh robot@robotpi.local 'mkdir -p ~/robot'
-scp "$ROBOT_PROJECT"/{robot_main.py,crsf.py,ddsm115.py,fast_hat.py,fast_robot.py,motor_setup.py,requirements.txt,config.example.json} robot@robotpi.local:~/robot/
+scp "$ROBOT_PROJECT"/*.py "$ROBOT_PROJECT"/requirements.txt "$ROBOT_PROJECT"/config.example.json robot@robotpi.local:~/robot/
+scp -r "$ROBOT_PROJECT"/deploy robot@robotpi.local:~/robot/
 ~~~
 
 In the **Pi's SSH terminal**, install the dependency in a Python virtual environment:
@@ -97,13 +98,14 @@ Log out with **exit** and SSH back in so serial-port permission takes effect. Th
 
 ~~~sh
 cd ~/robot
-python3 -m venv .venv
+python3.14 -m venv .venv
+./.venv/bin/python --version
 ./.venv/bin/python -m pip install -r requirements.txt
 cp config.example.json config.json
 ./.venv/bin/python robot_main.py check --config config.json
 ~~~
 
-The last line should report **fast** mode, wheel IDs **1–4**, motor port **/dev/serial0**, and radio port **/dev/ttyAMA5**. This is a config check only; it does not communicate with hardware. The virtual environment avoids current Raspberry Pi OS restrictions on system-wide pip installs. [Pi OS Python guidance](https://www.raspberrypi.com/documentation/computers/os.html).
+The robot requires Python **3.14.8**; `--version` must print it, so create the virtual environment with `python3.14`. The last line of the check should report **fast** mode, wheel IDs **1–4**, motor port **/dev/serial0**, and radio port **/dev/ttyAMA5**. This is a config check only; it does not communicate with hardware. The virtual environment avoids current Raspberry Pi OS restrictions on system-wide pip installs. [Pi OS Python guidance](https://www.raspberrypi.com/documentation/computers/os.html).
 
 ## 5. Configure the Pocket controller
 
@@ -115,14 +117,14 @@ On the EdgeTX **Mixes** page, set one direct mix for each channel. Start with **
 | --- | --- | --- |
 | CH1 | Right stick horizontal / Aileron | Steering, centered at 0 |
 | CH3 | Throttle stick | Fully low is stop (−100%); up requests speed |
-| CH5 | SA latching switch | Low = disarmed; low then high = arm |
-| CH6 | SB switch | Low or center = forward; high = reverse |
-| CH7 | SD latching switch | Low = normal; high = stop |
-| CH10 | S1 dial | Lowest = zero/little drive current; highest = 1 A cap |
+| CH5 | SA latching switch | Low = disarmed; low then high at neutral = arm |
+| CH6 | **SB three-position switch** | Low Gentle; center Normal; high Boost |
+| CH7 | SD latching switch | High = stop |
+| CH8 | SC position switch | Low/center forward; high reverse |
 
-Use EdgeTX's **Channel Monitor** screen to check that only the intended channel changes with each control. Reverse a mix in EdgeTX if its high/low direction is wrong. In particular, **CH3 must be low at rest**, **CH5 must be low before arming**, and **CH7 high must be stop**. The [EdgeTX Mixes guide](https://manual.edgetx.org/bw-radios/model-select/inputs-mixes-and-outputs/mixes) shows how to choose a channel's source.
+**SB is the confirmed physical mode switch. CH6 is the example mix, not a channel inherent to SB.** In EdgeTX **Mixes**, select the CH6 row and set its source to SB. Check **Channel Monitor**: moving only SB must move only CH6 through about -100%, 0%, +100%. If your existing model uses another channel, change `channels.profile` in `config.json` to that channel and keep all control mappings distinct. The S1 current dial is no longer used in fast mode. The [EdgeTX Mixes guide](https://manual.edgetx.org/bw-radios/model-select/inputs-mixes-and-outputs/mixes) describes channel sources.
 
-For the faster radio setting, first open **SYS → Hardware → Baudrate**, set the Pocket's **internal ELRS serial baud to 921k**, and restart the Pocket. Then, in **SYS → ExpressLRS**, choose **333 Hz Full / 12ch Mixed** if both radio firmware versions offer it. That gives CH1/CH3 the full packet rate and CH6/CH7/CH10 half rate. If unavailable, use **250 Hz / Wide**; 400k serial baud is sufficient for that rate. Wide gives the S1 dial useful proportional resolution; Hybrid limits CH10 to a few steps. Keep CH5 as the arm channel. Change ELRS switch mode while the XR4 is off, then check the channels again. [ExpressLRS baud-rate recommendations](https://www.expresslrs.org/quick-start/transmitters/tx-prep/#serial-baud-rate), [ExpressLRS switch modes](https://www.expresslrs.org/software/switch-config/).
+Configure an ELRS switch mode that preserves all three SB positions on the chosen channel. With **SB on CH6 and arm on CH5**, use **333 Hz Full / 12ch Mixed** if supported; set the Pocket internal serial baud to the documented rate (921k for 333 Hz) and restart. **250 Hz / Wide** is a usable fallback for CH6; verify actual received positions. ELRS Hybrid/Wide always transmits CH5 as two positions, and ELRS 3.x Full 8ch/12ch Mixed also reserves CH5 for two-position arming. If you later assign the three-position mode to CH5, select **Full 16ch Rate/2** and verify its low/center/high values; ELRS 4.x changes Full Resolution channel behavior. Keep the physical arm on a distinct channel and configure ELRS's own arming method appropriately. Change switch mode while the receiver is off. [ExpressLRS switch modes](https://www.expresslrs.org/software/switch-config/) and [baud recommendations](https://www.expresslrs.org/quick-start/transmitters/tx-prep/#serial-baud-rate).
 
 ## 6. Attach and place the antennas; bind the XR4
 
@@ -152,7 +154,9 @@ cd ~/robot
 - Throttle about **−1** fully low, rising toward **+1** as you raise it.
 - Steering about **0** centered, negative left, positive right.
 - CH5 arm and CH7 stop each read about **−1** low and **+1** high.
-- CH6 reverse changes low/high; S1 changes the current dial value.
+- **SB / CH6** reports distinct low, center, and high raw values. The drive's live view shows Gentle/Normal/Boost selection after debounce when you run it in the restrained setup.
+- **SC / CH8** changes reverse. If SB changes another channel, correct the mix or configuration before arming.
+- Default profile ranges are raw CRSF 150..350, 850..1150, and 1650..1850; adjust these disjoint ranges only from observed values. Invalid input falls back to Gentle and cannot request Boost.
 
 Press **Control+C** to exit. If the XR4 LED is solid but there are no channels, check the receiver's CRSF output, UART5 device, and **radio_baud: 420000** in config. If channels appear but **healthy=False**, the program also needs fresh positive link-quality statistics; do not bypass that condition.
 
@@ -162,61 +166,57 @@ Do this **after you have assigned the four motor IDs**, since the ID utility use
 
 1. Install [Arduino IDE 2](https://www.arduino.cc/en/software) on the Mac.
 2. In **Preferences → Additional Boards Manager URLs**, add **https://espressif.github.io/arduino-esp32/package_esp32_index.json**. In **Boards Manager**, install **esp32 by Espressif Systems**, version **3.3.12**, and select **ESP32 Dev Module**. [Espressif Arduino setup](https://docs.espressif.com/projects/arduino-esp32/en/latest/installing.html).
-3. In Arduino IDE, open **hat_firmware/robot_hat/robot_hat.ino** from the project folder. Connect the HAT's **ESP32-USB** port, not the **DDSM-USB** motor-bus port, to the Mac with a data cable. Select the new serial port. Set the HAT's control switch to **ESP32**.
+3. In Arduino IDE, open **hat_firmware/robot_hat/robot_hat.ino** from the complete sketch folder (keep all `.h` files alongside it) from the project folder. Connect the HAT's **ESP32-USB** port, not the **DDSM-USB** motor-bus port, to the Mac with a data cable. Select the new serial port. Set the HAT's control switch to **ESP32**.
 4. Click **Verify**. If that succeeds, click **Upload** and wait for **Done uploading**. Disconnect the HAT USB cable, reseat the HAT on the Pi, and restore your verified robot power arrangement. [Arduino upload guide](https://docs.arduino.cc/software/ide-v2/tutorials/getting-started-ide-v2/).
 
 The upload replaces Waveshare's HAT firmware, but the wheel IDs are stored in the motors. If you need the original HAT interface back, Waveshare provides a [factory restore package](https://github.com/waveshareteam/ddsm_example#quick-factory-reset) that flashes through ESP32-USB; its included flashing program is a **Windows executable**.
 
-## 9. Test the four-wheel program
+## 9. Test the implemented modes with raised wheels
 
-Have all **four** correctly identified motors connected and powered before booting the custom HAT firmware. It checks all four at startup and latches a fault if one is absent. Keep the chassis secured with all wheels raised. Start the Pocket with throttle fully low, S1 low, arm low, and stop high. Then power the robot.
-
-From the Pi:
+Connect all four unique IDs, restrain the chassis with wheels raised, and verify the physical motor-power cutoff described in [INDEPENDENT_STOP.md](INDEPENDENT_STOP.md). Start with throttle low, **SB Gentle**, SA arm low, and SD stop high. The program starts motion-inhibited and reports the HAT's independent stop state.
 
 ~~~sh
-ssh robot@robotpi.local
 cd ~/robot
-./.venv/bin/python robot_main.py run --config config.json --telemetry robot_telemetry.csv
+./.venv/bin/python robot_main.py run --config config.json --telemetry logs/robot.csv
 ~~~
 
-The Pi and HAT first require fresh feedback that all four wheels are stationary. Then:
+1. Require fresh four-wheel feedback and **STOP CONFIRMED**, accepted configuration identity, and the expected protocol/capabilities. Release SD stop, keep throttle low, then move SA low to high.
+2. In Gentle, add low throttle. Check each raised wheel's direction and actual/target RPM. Check steering and **SC / CH8** reverse; stop before changing any wheel polarity.
+3. At low demand, select SB center and high. The view shows requested/applied profile, actual per-wheel current cap, measured current/temperature/age, warnings, Boost remaining/refill, and holding. The supplied fast configuration permits the full **0.8 / 1.5 / 2.5 A** profiles. There is no 1.2 A cap. Boost allowance, thermal derating, and fault protection can still limit a request; every limitation is visible.
+4. Verify neutral settling/holding, individual zero-wheel turns, profile transitions, Boost expiry/refill, SD stop, SA disarm, radio off/reconnect, Pi restart, and HAT restart. Recovery requires neutral and a fresh arm cycle; no restart restores previous motion permission.
+5. Ctrl+C requests and verifies stop. If confirmation is missing, use the physical cutoff. Stop-confirmed telemetry does not prove the chassis is mechanically retained on a slope.
 
-1. Move CH7 stop **low**. Keep throttle fully low. Move CH5 arm **low**, then **high**. Look for **Armed four-wheel drive**.
-2. Raise S1 a small amount and add a little throttle. S1 at minimum can correctly prevent any motion. Check all wheel directions while raised.
-3. At low throttle, test steering and CH6 reverse. If a wheel's forward direction is wrong, stop the program and change that wheel's **polarity** in **~/robot/config.json**, then restart and test again.
-4. Test CH7 stop and CH5 disarm. Each should require a fresh low-to-high arm cycle at zero throttle. With wheels still raised, test radio loss by turning the Pocket off while moving slowly; it should stop and remain disarmed on reconnection.
-5. Press **Control+C** to stop the program. It requests and checks a HAT stop. If a wheel does not stop, use the physical cutoff. After testing, run **sudo shutdown -h now**, wait for the Pi to shut down, then remove robot power.
+Logs have unique session names; configuration metadata and events accompany them. The view shows dropped rows and storage errors. A slow or failed disk does not block the drive loop. **40 RPM** and **15 ms** are initial requested settings, not measured performance. Candidate 0.8/1.5/2.5 A profiles and 20 s / 60 s Boost allowance require measured acceptance, with separate electrical/thermal acceptance for Normal and Boost. Follow [COMMISSIONING.md](COMMISSIONING.md) before lowering the robot. Battery/BMS/wiring current is not measured by motor torque telemetry.
 
-The example starts at **40 RPM maximum**, **1.0 A drive-current cap**, and a **15 ms requested** Pi/HAT update period. The HAT uses acceleration/deceleration ramps and wheel feedback. These are **starting settings**, not measured four-wheel performance or established ground-driving limits. Review **robot_telemetry.csv**, console rate/deadline messages, wheel temperature, and stop behavior before lowering the robot. The program does not monitor battery charge.
+For optional radio feedback, connect Pi UART5 TX **GPIO12 / physical pin32** to XR4 CRSF RX (with verified compatible logic levels/common ground), then enable `radio_telemetry_enabled` in the config. The return path publishes a standard CRSF flight-mode/status string for state, applied mode, fault, and Boost availability. Enable a telemetry ratio that carries return data, discover sensors on the Pocket, and verify the displayed state against the local view. Do not present motor current as a measured battery sensor. Radio telemetry implementation still needs physical radio/display verification.
 
-## 10. Make it start when the robot powers on (after testing)
+## 10. Bounded service recovery (after acceptance)
 
-Do this only after the raised-wheel test passes. Stop a manually running copy first. Every powered boot must have all four identified motors connected and powered before the custom HAT checks them. On the Pi:
+Stop any manual drive process first; only one process may own the motor port. The provided service uses the example user **robot** and directory **/home/robot/robot**. Edit those paths in `deploy/robot-drive.service` if your install differs.
 
 ~~~sh
 cd ~/robot
-cat > robot-drive.service <<EOF
-[Unit]
-Description=Four-wheel robot drive
-After=local-fs.target
-
-[Service]
-Type=simple
-User=$USER
-WorkingDirectory=$PWD
-ExecStart=$PWD/.venv/bin/python $PWD/robot_main.py run --config $PWD/config.json --telemetry $PWD/robot_telemetry.csv
-Restart=no
-
-[Install]
-WantedBy=multi-user.target
-EOF
-sudo install -m 644 robot-drive.service /etc/systemd/system/robot-drive.service
+sudo install -m 644 deploy/robot-drive.service /etc/systemd/system/robot-drive.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now robot-drive.service
 sudo journalctl -u robot-drive.service -f
 ~~~
 
-**Control+C** exits the log viewer but leaves the service running. To stop/start the program later, use **sudo systemctl stop robot-drive.service** or **sudo systemctl start robot-drive.service**. Radio arming is still required after each boot. Save **robot_telemetry.csv** before restarting the program if you want to keep it; a new run replaces that file. You do not need Wi-Fi for the Pocket to drive once the service is running; Wi-Fi/SSH is for setup and logs.
+The wrapper permits at most five process starts with 2/4/8/16-second backoff; faults stay in the journal. Every start creates a new inhibited HAT session and requires deliberate neutral arming. After the retry limit, inspect the original failure and manually restart. Ctrl+C exits the journal viewer only. `sudo systemctl stop robot-drive.service` stops the service; `sudo systemctl start robot-drive.service` starts it. Session filenames do not overwrite earlier runs. Preserve logs and acceptance records.
+
+## 11. Reproduce the software release
+
+~~~sh
+python3 tools/verify.py
+arduino-cli core update-index --additional-urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
+arduino-cli core install esp32:esp32@3.3.12 --additional-urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
+arduino-cli compile --fqbn esp32:esp32:esp32 hat_firmware/robot_hat
+python3 tools/release.py
+~~~
+
+`tools/verify.py` runs both generator checks, both example-config checks, and the full test suite on every C++ compiler it finds (clang++, GNU GCC); any failure, error, or skip fails it. It requires Python **3.14.8**; `--allow-python-mismatch` is diagnostic only, not a full verification. Set `CXX` to pick one compiler, e.g. `CXX=g++-16 python3 -m unittest discover -s tests -v`. On macOS `g++` is Apple clang; GNU GCC is `g++-N`.
+
+The firmware source digest is reported as its build identity. The generated protocol definitions and firmware build header must match their sources. Release tooling records source hashes and the Git identity. The original pre-implementation code is preserved in `releases/robot-v1-baseline.zip`. Develop on a separate branch and merge into `main` through a reviewed pull request.
 
 ## Quick troubleshooting
 
@@ -229,7 +229,8 @@ sudo journalctl -u robot-drive.service -f
 | Bound XR4 but no Pi channels | UART5, CRSF output, **/dev/ttyAMA5**, 420000 baud, receiver power. |
 | Channels present but unhealthy | Fresh positive LQ and link-statistics frames. |
 | HAT upload fails | ESP32-USB port, data cable, selected serial port, correct board/core; see Waveshare's BOOT-button procedure. |
-| HAT fault or cannot arm | All four unique motor IDs, four live stationary motors, HAT power and communication; fix the cause then fully power-cycle the HAT. |
+| Inspection fault remains after repair | Record the original cause, repair and verify it, then reset the HAT and restart the Pi supervisor. Both intentionally retain inhibition until reset; use a fresh neutral arm cycle. |
+| HAT fault or cannot arm | All four unique motor IDs, four live stationary motors, HAT power and communication; Resolve the reported cause. Communication/thermal recovery returns to readiness only; inspection faults require inspection and HAT reset after repair. Always rearm deliberately. |
 | Unexpected movement or failed stop | Use the physical power cutoff, then inspect logs and hardware before trying again. |
 
 ## Official references
