@@ -65,8 +65,8 @@ SOFTWARE CHECKS
   still has the old code.
 - After the first drive run, check the HAT firmware on the Pi:
     grep -h session_ready ~/robot/logs/*.events.jsonl
-  firmware_build_id must be 1341153297 (0x4ff06011, the fixed firmware).
-  3213015933 means the old firmware is still on the HAT.
+  firmware_build_id must be 3395522363 (0xca638f3b, the reply-retry firmware).
+  1341153297 (0x4ff06011) or 3213015933 means older firmware is still on the HAT.
 
 REPOSITORY HOUSEKEEPING
 - Done: removed the redundant baseline zip and CLEANUP.md. The original

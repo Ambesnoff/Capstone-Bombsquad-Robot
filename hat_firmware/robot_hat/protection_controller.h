@@ -18,6 +18,14 @@ static void protectionUpdate(float dt) {
       w.reason |= R_STALL_WARN | R_SPEED;
     if (w.holdLimited && state == HOLDING)
       w.reason |= R_HOLD_LIMITED;
+    // Informational. w.reason was just cleared, so rebuild the flag from the
+    // stored failure time; a stamp older than the window is dropped.
+    if (w.failedMs) {
+      if (now - w.failedMs < REPLY_RETRY_MS)
+        w.reason |= R_REPLY_RETRY;
+      else
+        w.failedMs = 0;
+    }
     const bool fresh = w.valid && now - w.lastFeedbackMs <= cfg.feedbackMs;
     const bool tempFresh =
         w.temperatureValid && now - w.lastInfoMs <= cfg.tempFreshMs;
@@ -25,8 +33,11 @@ static void protectionUpdate(float dt) {
       w.reason |= R_FEEDBACK_STALE;
       cool = false;
       boostSafe = false;
+      // Retries hide a missed reply until feedbackMs; the last failed attempt
+      // says whether the wheel was garbled or silent.
       if (currentState())
-        trip(MOTOR_TIMEOUT, i + 1);
+        trip(w.lastFailure == MOTOR_BAD_REPLY ? BAD_MOTOR_FRAME : MOTOR_TIMEOUT,
+             i + 1);
     }
     if (!tempFresh) {
       w.reason |= R_TEMP_STALE;

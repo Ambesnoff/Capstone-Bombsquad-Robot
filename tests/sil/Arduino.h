@@ -20,6 +20,26 @@ struct SimMotor {
   bool absent = false, corrupt = false, ignoreMode = false, stuck = false;
   int feedbackCurrent = 0;
   unsigned queries = 0, commands = 0;
+  // Transient transport faults for 0x64/0x74 requests addressed to this motor;
+  // 0xA0 mode writes never reach them. Each request consumes at most one
+  // counter, tried in this order, so a test can script a run of failures
+  // (for example ignoreRequests = 1 and dropReplies = 1 loses one request and
+  // then drops the retry's reply). absent and corrupt stay persistent.
+  //   passRequests:   serve this many requests normally first, to aim a fault
+  //                   at a later request of a multi-request sequence.
+  //   ignoreRequests: the request is lost on the wire. The motor does not see
+  //                   it, so it neither applies nor answers. queries/commands
+  //                   still count it, as they already count requests to an
+  //                   absent motor: they are the firmware's transmit counters,
+  //                   which is what retry bounds are measured against.
+  //                   injectStopAfterWheel also still fires: it models the
+  //                   host, not the motor.
+  //   dropReplies:    the motor handles the request normally, including
+  //                   applying a command, but its reply never arrives.
+  //   garbleReplies:  the reply arrives with a corrupted CRC, like corrupt but
+  //                   for the next N replies only.
+  unsigned passRequests = 0, ignoreRequests = 0, dropReplies = 0,
+           garbleReplies = 0;
 };
 inline SimMotor simMotor[4];
 inline uint64_t simTimeUs = 0;
@@ -112,15 +132,28 @@ inline size_t FakeSerial::write(const uint8_t *p, size_t n) {
       m.mode = p[9];
     return n;
   }
+  bool lost = false, dropped = false, garbled = false;
+  if (m.passRequests) {
+    m.passRequests--;
+  } else if (m.ignoreRequests) {
+    m.ignoreRequests--;
+    lost = true;
+  } else if (m.dropReplies) {
+    m.dropReplies--;
+    dropped = true;
+  } else if (m.garbleReplies) {
+    m.garbleReplies--;
+    garbled = true;
+  }
   if (p[1] == 0x74) {
     m.queries++;
-    if (m.mode == 1)
+    if (m.mode == 1 && !lost)
       allCurrentModesQueried |= 1U << (p[0] - 1);
   } else {
     m.commands++;
-    if (m.mode == 3)
+    if (m.mode == 3 && !lost)
       unsafePositionCommands++;
-    if (m.mode == 1) {
+    if (m.mode == 1 && !lost) {
       const int16_t raw = int16_t((uint16_t(p[2]) << 8) | p[3]);
       m.currentMa = raw * 8000.0f / 32767.0f;
     }
@@ -129,7 +162,7 @@ inline size_t FakeSerial::write(const uint8_t *p, size_t n) {
     injectStopAfterWheel = 0;
     injectStopFrame();
   }
-  if (m.absent)
+  if (m.absent || lost || dropped)
     return n;
   uint8_t reply[10] = {p[0], m.mode, 0, 0, 0, 0, 0, 0, m.error, 0};
   const int16_t ma = int16_t(
@@ -149,7 +182,7 @@ inline size_t FakeSerial::write(const uint8_t *p, size_t n) {
     reply[7] = uint8_t(pos);
   }
   reply[9] = simCrc8(reply, 9);
-  if (m.corrupt)
+  if (m.corrupt || garbled)
     reply[9] ^= 0x40;
   for (auto b : reply)
     incoming.push_back(b);

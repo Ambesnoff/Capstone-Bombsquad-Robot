@@ -29,6 +29,8 @@ Candidate profile caps are **0.8 A Gentle, 1.5 A Normal, 2.5 A Boost**. The supp
 
 The HAT owns a **20-second Boost capacity / 60-second refill** budget. It starts empty after reset, survives Pi reconnects, consumes while Boost applies, and refills only outside Boost with fresh, cool, fault-free readings. It reports fallback/derating reasons. Initial temperature settings are warning 50 C, derating 55 C, stop 65 C, with explicit freshness, hysteresis, and cooldown settings.
 
+A missed or garbled motor reply is retried at once (3 attempts) and reported as `REPLY_RETRY` for 1 s. While driving, a wheel that stays silent faults only after `feedback_timeout_ms` (150 ms by default); arming, stopping and disarmed polling still fault after the third failed attempt.
+
 Neutral settling and bounded encoder-assisted holding are separate from driving and stopping. A zero inner wheel in a turn does not park the whole robot. Holding uses its own limits and remains subordinate to faults and thermal/power protection. Powered holding is unavailable after motor-power removal.
 
 CSV logging uses bounded background work, unique session files, full configuration metadata, event records, visible dropped rows, and storage-error reporting. Logging loss does not authorize movement or block the control loop. The live view explains requested/applied modes, wheel limits, feedback, protection, holding, stop confirmation, and Boost availability. Optional CRSF return telemetry requires the Pi TX wire to XR4 RX.

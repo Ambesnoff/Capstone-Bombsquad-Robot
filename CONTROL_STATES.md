@@ -21,6 +21,7 @@ The Pi requests motion; the HAT owns operating transitions and protective limits
 - Mode changes alter only the permitted current envelope. Increases are ramped; reductions honor protective ceilings and anti-windup. Gentle selection and Boost expiry do not silently release independent required holding effort. Fault or thermal stop can remove holding and must be visible.
 - The HAT owns Boost tokens. After reset the budget is zero. It consumes while Boost is applied; a held exhausted Boost request cannot refill itself. Refill requires leaving Boost, fresh fault-free cool feedback, and cooldown dwell. Pi restart, HELLO, or switch cycling does not grant a fresh budget.
 - Warning/derating thresholds use hysteresis. Thermal stop and required-feedback loss inhibit driving immediately according to configured freshness/persistence rules. Holding has separate thermal/current limits but does not override protective stops.
+- A missed or garbled motor reply is retried at once (3 attempts). While driving or holding, a wheel that misses all 3 is skipped for that sweep and sent its last acknowledged current again next sweep, with normal control resuming after a valid reply; it faults only after the feedback timeout. Arming, stop and disarmed polling fault after the third failed attempt. The informational `REPLY_RETRY` reason lasts 1 s and gates nothing.
 
 ## Recovery
 

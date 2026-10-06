@@ -63,6 +63,7 @@ class Reason(IntFlag):
     SESSION_MISMATCH = 32768
     SPEED_ERROR = 65536
     INSPECTION_REQUIRED = 131072
+    REPLY_RETRY = 262144
 
 class Capability(IntFlag):
     PROFILES = 1

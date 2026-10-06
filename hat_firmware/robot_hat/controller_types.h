@@ -9,6 +9,10 @@ static constexpr uint8_t MOTOR_RX_PIN = 18, MOTOR_TX_PIN = 19, WHEEL_COUNT = 4;
 static constexpr uint8_t HOST_MAX_PAYLOAD = 240, MOTOR_FRAME_SIZE = 10;
 static constexpr uint16_t HOST_MAX_FRAME = 9 + HOST_MAX_PAYLOAD;
 static constexpr uint32_t MOTOR_REPLY_TIMEOUT_US = 8000;
+// A missed or garbled motor reply is retried at once, MOTOR_ATTEMPTS in all.
+// REPLY_RETRY stays reported for REPLY_RETRY_MS after a wheel's last failure.
+static constexpr uint8_t MOTOR_ATTEMPTS = 3;
+static constexpr uint16_t REPLY_RETRY_MS = 1000;
 static constexpr uint16_t HARD_MAX_RPM = 200, HARD_MAX_CURRENT_MA = 2700;
 static constexpr uint8_t HARD_MAX_TEMP_C = 70, STATIONARY_RPM = 2;
 // Whole-chassis neutral enters position holding once every wheel stays at or
@@ -72,7 +76,8 @@ enum : uint32_t {
   R_CONFIG = 16384,
   R_SESSION = 32768,
   R_SPEED = 65536,
-  R_INSPECTION = 131072
+  R_INSPECTION = 131072,
+  R_REPLY_RETRY = 262144
 };
 // The control code names these values directly; they must stay identical to
 // the generated wire contract shared with the Pi.
@@ -128,7 +133,8 @@ static_assert(
         R_CONFIG == wireValue(ProtocolV2::Reason::CONFIG_REJECTED) &&
         R_SESSION == wireValue(ProtocolV2::Reason::SESSION_MISMATCH) &&
         R_SPEED == wireValue(ProtocolV2::Reason::SPEED_ERROR) &&
-        R_INSPECTION == wireValue(ProtocolV2::Reason::INSPECTION_REQUIRED),
+        R_INSPECTION == wireValue(ProtocolV2::Reason::INSPECTION_REQUIRED) &&
+        R_REPLY_RETRY == wireValue(ProtocolV2::Reason::REPLY_RETRY),
     "Reason bits must match the generated Reason flags");
 static_assert(HARD_MAX_CURRENT_MA == ProtocolV2::FIRMWARE_MAX_CURRENT_MA &&
                   HOST_MAX_PAYLOAD == ProtocolV2::MAX_PAYLOAD,
@@ -160,13 +166,17 @@ struct Wheel {
   uint16_t positionRaw = 0, lastPositionRaw = 0;
   int64_t positionUnwrapped = 0, holdAnchor = 0;
   uint8_t error = 0, mode = 0;
+  // MotorResult of the latest failed attempt; MOTOR_OK once a reply is valid.
+  uint8_t lastFailure = MOTOR_OK;
   uint32_t lastFeedbackMs = 0, lastInfoMs = 0, lastPositionMs = 0,
            stallSinceMs = 0, currentSinceMs = 0, reverseSinceMs = 0,
-           saturationSinceMs = 0, reason = 0;
+           saturationSinceMs = 0, reason = 0, failedMs = 0;
   float rampRpm = 0, integralRpmS = 0, holdIntegral = 0, effectiveCapMa = 0,
         holdCapMa = 0, protectionCapMa = 0, controlCapMa = 0;
   bool valid = false, positionValid = false, temperatureValid = false,
        thermalWarning = false, thermalDerating = false, holdLimited = false;
+  // The last current command got no valid reply: feedback is older than it.
+  bool unacked = false;
 };
 static ControllerConfig cfg;
 static Wheel wheel[WHEEL_COUNT];

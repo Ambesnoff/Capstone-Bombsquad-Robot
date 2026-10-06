@@ -257,6 +257,7 @@ Reason bit masks are:
 | 15 | 32768 | Session mismatch |
 | 16 | 65536 | Persistent speed error |
 | 17 | 131072 | Inspection required; fault latched until ESP32 reset |
+| 18 | 262144 | Motor reply retried in the last 1000 ms; informational |
 
 Capability bits are profiles 1, sessions 2, holding 4, independent temperature
 age 8, stop confirmation 16, config identity 32, reset watchdog 64, position 128.
@@ -286,6 +287,16 @@ later disturbed (for example a pushed wheel) starts a new `stop_verify_ms`
 window; motion that persists past it latches an inspection fault naming the
 wheel. The host separately
 invalidates pending ARM writes and late ARM acknowledgments when STOP begins.
+
+A missed or garbled motor reply is retried at once, 3 attempts in all (wrong-mode,
+interrupted and motor-error replies are answers and are not retried). While driving
+or holding, a wheel that fails all 3 is skipped for that sweep: no health check on
+stale data, and the targets are not reported applied. Its next sweep re-sends the
+last acknowledged current without running its controller; control resumes after a
+valid reply. It faults only after `feedback_timeout_ms` without one (`3` invalid
+motor frame if its latest failed attempt was garbled, else `2` motor timeout).
+Arming, stop and disarmed polling fault after the third failed attempt. Reason bit
+18 marks a wheel's failed attempt for 1000 ms and gates no arming, motion or Boost.
 
 Overtemperature, required feedback loss, motor errors, command expiry, persistent
 stall and abnormal current inhibit motion automatically. Recoverable faults

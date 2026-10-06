@@ -132,6 +132,173 @@ static float simRotationDuring(uint8_t index, uint32_t ms) {
   }
   return peak * 360.0f / simCountsPerRev;
 }
+// Reply-retry tolerance. REPLY_RETRY is reason bit 18 and a motor transaction
+// makes at most 3 attempts; both are written out as literals so these tests
+// need no firmware symbol that the change itself introduces.
+static constexpr uint32_t kReplyRetry = 262144;
+static constexpr unsigned kAttempts = 3;
+static void clearSimFaults(SimMotor &m) {
+  m.passRequests = m.ignoreRequests = m.dropReplies = m.garbleReplies = 0;
+}
+// Step the real loop() until it has started one more control sweep, renewing
+// targets so the command watchdog stays quiet. It returns right after that
+// iteration, so simulator counters read here belong to that sweep alone.
+static void runOneSweep(int16_t target = 0, uint8_t profile = 0) {
+  const uint32_t scheduled = nextSweepUs;
+  for (int guard = 0; nextSweepUs == scheduled; guard++) {
+    assert(guard < 100);
+    if (millis() - lastTargetMs >= 50)
+      sendTargets(target, profile);
+    loop();
+    advanceUs(1000);
+  }
+}
+// REPLY_RETRY names exactly the wheel that missed a reply (-1: no wheel).
+static void expectReplyRetry(int missed) {
+  assert(bool(reasonFlags & kReplyRetry) == (missed >= 0));
+  for (int i = 0; i < 4; i++)
+    assert(bool(wheel[i].reason & kReplyRetry) == (i == missed));
+}
+// Wheel `w` loses one reply of kind `failure` in one sweep of a drive. Retrying
+// must hide it: the sweep still reaches every wheel, nothing faults, the sweep
+// counts as applied, and only REPLY_RETRY records that it happened.
+static void driveThroughFailure(uint8_t w, unsigned SimMotor::*failure) {
+  ready();
+  runFor(1500, true, 2000, 1);
+  // A target step makes every sweep command a clearly different current, so
+  // "this sweep's command reached the motor" cannot pass on a stale value.
+  sendTargets(3500, 1);
+  runOneSweep(3500, 1);
+  const float before = simMotor[w].currentMa;
+  unsigned commands[4];
+  for (int i = 0; i < 4; i++)
+    commands[i] = simMotor[i].commands;
+  // Fresh targets, so the sweep that meets the failure has a new sequence to apply.
+  sendTargets(3500, 1);
+  assert(lastAppliedSequence != lastAcceptedSequence);
+  simMotor[w].*failure = 1;
+  runOneSweep(3500, 1);
+  assert(faultCode == NO_FAULT);
+  assert(motionState());
+  assert(simMotor[w].*failure == 0);
+  // The failed request and one immediate retry, not a skipped wheel.
+  assert(simMotor[w].commands == commands[w] + 2);
+  for (int i = 0; i < 4; i++)
+    if (i != w)
+      assert(simMotor[i].commands == commands[i] + 1);
+  assert(std::fabs(wheel[w].lastCommandedMa - before) > 10);
+  near(simMotor[w].currentMa, wheel[w].lastCommandedMa, 0.5f);
+  assert(wheel[w].valid && millis() - wheel[w].lastFeedbackMs <= cfg.feedbackMs);
+  assert(lastAppliedSequence == lastAcceptedSequence);
+  // A miss that a retry answered leaves feedback fresh, so the wheel's
+  // controller keeps running on the next sweep: it is not put on hold.
+  const float ramp = wheel[w].rampRpm;
+  runOneSweep(3500, 1);
+  assert(wheel[w].rampRpm > ramp);
+  // REPLY_RETRY lasts 1000 ms from the wheel's most recent failed attempt, and
+  // only warns: a second failure 600 ms on extends it, and driving carries on.
+  runFor(30, true, 3500, 1);
+  expectReplyRetry(w);
+  runFor(570, true, 3500, 1);
+  simMotor[w].*failure = 1;
+  runOneSweep(3500, 1);
+  assert(faultCode == NO_FAULT);
+  assert(simMotor[w].*failure == 0);
+  runFor(500, true, 3500, 1);
+  expectReplyRetry(w);
+  runFor(300, true, 3500, 1);
+  expectReplyRetry(w);
+  runFor(300, true, 3500, 1);
+  expectReplyRetry(-1);
+  assert(faultCode == NO_FAULT);
+  assert(state == ARMED);
+  assert(wheel[w].lastCommandedMa > 100);
+  // Holding position at neutral is a current-mode state too: one miss is
+  // retried, and a sweep that loses all three attempts does not fault either.
+  runFor(800, true);
+  assert(state == HOLDING);
+  unsigned held = simMotor[w].commands;
+  simMotor[w].*failure = 1;
+  runOneSweep();
+  assert(faultCode == NO_FAULT);
+  assert(state == HOLDING);
+  assert(simMotor[w].commands == held + 2);
+  held = simMotor[w].commands;
+  simMotor[w].*failure = kAttempts;
+  runOneSweep();
+  assert(faultCode == NO_FAULT);
+  assert(state == HOLDING);
+  assert(simMotor[w].commands == held + kAttempts);
+  runOneSweep();
+  runOneSweep();
+  assert(faultCode == NO_FAULT);
+  assert(state == HOLDING);
+}
+// Wheel `w` goes silent, or garbles every reply, while driving. The firmware
+// rides it out for the feedback limit and no longer, with bounded retries, and
+// then faults on that wheel and stops. The stop sequence starts as the fault
+// latches, so stopVerifyStartedMs is the fault time without the stop's own
+// duration, which loop() would otherwise add. With `overcurrent`, the wheel
+// last reported a current above the abnormal-current ceiling 120 ms before it
+// went silent: re-checking that stale reading would trip ABNORMAL_CURRENT, an
+// inspection fault, at 200 ms, before the feedback limit has produced the
+// recoverable timeout.
+static void driveToLimit(uint8_t w, bool garbled, bool overcurrent = false) {
+  ready();
+  runFor(1500, true, 2000, 1);
+  if (overcurrent) {
+    simMotor[w].feedbackCurrent = 2500;
+    runFor(120, true, 2000, 1);
+    assert(faultCode == NO_FAULT);
+    assert(wheel[w].currentSinceMs);
+  }
+  // Keep the temperature poll out of the window: every request to `w` is then
+  // a retry of its current command.
+  for (auto &x : wheel)
+    x.lastInfoMs = millis();
+  const uint8_t healthy = (w + 1) % 4;
+  const unsigned requests0 = simMotor[w].commands + simMotor[w].queries,
+                 sweeps0 = simMotor[healthy].commands;
+  const uint32_t t0 = millis();
+  (garbled ? simMotor[w].corrupt : simMotor[w].absent) = true;
+  unsigned requests = 0, sweeps = 0;
+  while (faultCode == NO_FAULT) {
+    assert(millis() - t0 <= cfg.feedbackMs + 60u);
+    // Counted before the iteration that trips, so the stop sequence's own
+    // requests are not mistaken for retries. Every healthy wheel is commanded
+    // once per sweep, so its command count is the number of sweeps that ran.
+    requests = simMotor[w].commands + simMotor[w].queries - requests0;
+    sweeps = simMotor[healthy].commands - sweeps0;
+    if (millis() - lastTargetMs >= 50)
+      sendTargets(2000, 1);
+    loop();
+    advanceUs(1000);
+  }
+  if (stopPending) {  // latched inside a sweep: the stop starts next iteration
+    loop();
+    advanceUs(1000);
+  }
+  const int32_t latched = static_cast<int32_t>(stopVerifyStartedMs - t0);
+  std::cerr << (garbled ? "drive_garble_limit"
+                        : overcurrent ? "drive_stale_skips_health_check"
+                                      : "drive_silence_limit")
+            << " latched_ms=" << latched << " sweeps=" << sweeps
+            << " requests=" << requests << "\n";
+  assert(latched >= static_cast<int>(cfg.feedbackMs) - 20);
+  assert(latched <= static_cast<int>(cfg.feedbackMs) + 60);
+  assert(faultCode == (garbled ? BAD_MOTOR_FRAME : MOTOR_TIMEOUT));
+  assert(faultWheel == w + 1);
+  assert(!inspectionRequired);
+  assert(sweeps >= 2);
+  assert(requests <= kAttempts * sweeps);
+  runFor(30);
+  assert(!stopPending);
+  assert(!haveTargets);
+  assert(state == FAULT);
+  for (int i = 0; i < 4; i++)
+    if (i != w)
+      assert(simMotor[i].mode == 2);
+}
 static void execute(const std::string &name) {
   if (name == "ramp") {
     near(advanceRampRpm(0, 40, .02f), 2.4f);
@@ -189,12 +356,19 @@ static void execute(const std::string &name) {
     return;
   }
   if (name == "combined_motor_fault") {
+    // A recoverable timeout is the first cause; a motor error seen afterwards,
+    // during stop/recovery polling, forces the inspection lockout while the
+    // first cause stays recorded. The timeout must come first: a lone missed
+    // reply is retried and the silent wheel only faults at the feedback limit,
+    // so an error already present from the start would be seen by the sweeps
+    // before that limit and become the first cause instead.
     ready();
     simMotor[0].absent = true;
-    simMotor[1].error = 1;
-    runFor(200);
+    runFor(400, true);
     assert(faultCode == MOTOR_TIMEOUT);
     assert(faultWheel == 1);
+    simMotor[1].error = 1;
+    runFor(200);
     assert(wheel[1].error == 1);
     simMotor[0].absent = false;
     runFor(500);
@@ -905,6 +1079,511 @@ static void execute(const std::string &name) {
     for (int i : {0, 2, 3})
       assert(wheel[i].effectiveCapMa <= cfg.normalMa + 1);
     assert(reasonFlags & R_DERATE);
+    return;
+  }
+  if (name == "sim_transport_faults") {
+    // Self-check of the simulator's fault counters, which every retry scenario
+    // relies on. It uses motorTransaction, which stays single-attempt.
+    boot();
+    SimMotor &m = simMotor[0];
+    const unsigned queries = m.queries, commands = m.commands,
+                   others = simMotor[1].queries + simMotor[2].queries + simMotor[3].queries;
+    m.passRequests = m.ignoreRequests = m.dropReplies = m.garbleReplies = 1;
+    sendMotorMode(1, 2);  // a mode write never consumes a counter
+    assert(m.passRequests + m.ignoreRequests + m.dropReplies + m.garbleReplies == 4);
+    // One counter per request, in order: pass, lose, drop, garble, then healthy.
+    assert(motorTransaction(1, true, 0, 0, false) == MOTOR_OK);
+    assert(motorTransaction(1, true, 0, 0, false) == MOTOR_NO_REPLY);
+    assert(motorTransaction(1, true, 0, 0, false) == MOTOR_NO_REPLY);
+    assert(motorTransaction(1, true, 0, 0, false) == MOTOR_BAD_REPLY);
+    assert(motorTransaction(1, true, 0, 0, false) == MOTOR_OK);
+    assert(m.passRequests + m.ignoreRequests + m.dropReplies + m.garbleReplies == 0);
+    // A lost request still counts as sent; the other motors saw nothing.
+    assert(m.queries == queries + 5);
+    assert(simMotor[1].queries + simMotor[2].queries + simMotor[3].queries == others);
+    // A lost command never reaches the motor; one whose reply is dropped does.
+    m.mode = 1;
+    m.currentMa = 0;
+    m.ignoreRequests = 1;
+    assert(motorTransaction(1, false, 4000, 0, false) == MOTOR_NO_REPLY);
+    assert(m.currentMa == 0);
+    m.dropReplies = 1;
+    assert(motorTransaction(1, false, 4000, 0, false) == MOTOR_NO_REPLY);
+    near(m.currentMa, 4000 * 8000.0f / 32767.0f, 0.01f);
+    assert(m.commands == commands + 2);
+    // garbleReplies is corrupt for exactly N replies.
+    m.garbleReplies = 2;
+    assert(motorTransaction(1, true, 0, 0, false) == MOTOR_BAD_REPLY);
+    assert(motorTransaction(1, true, 0, 0, false) == MOTOR_BAD_REPLY);
+    assert(motorTransaction(1, true, 0, 0, false) == MOTOR_OK);
+    return;
+  }
+  if (name == "drive_single_drop") {
+    driveThroughFailure(2, &SimMotor::dropReplies);
+    return;
+  }
+  if (name == "drive_single_garble") {
+    driveThroughFailure(3, &SimMotor::garbleReplies);
+    return;
+  }
+  if (name == "drive_lost_command_redelivered") {
+    // The first attempt never reaches the motor. Only the immediate retry can
+    // deliver this sweep's current, which driveThroughFailure checks on the motor.
+    driveThroughFailure(0, &SimMotor::ignoreRequests);
+    return;
+  }
+  if (name == "drive_silence_limit") {
+    driveToLimit(1, false);
+    return;
+  }
+  if (name == "drive_garble_limit") {
+    driveToLimit(2, true);
+    return;
+  }
+  if (name == "drive_stale_skips_health_check") {
+    driveToLimit(1, false, true);
+    return;
+  }
+  if (name == "applied_needs_all_wheels") {
+    ready();
+    sendTargets(3000);
+    const uint16_t prior = lastAppliedSequence, targetSeq = lastAcceptedSequence;
+    assert(prior != targetSeq);
+    simMotor[1].dropReplies = kAttempts;
+    previousSweepUs = micros() - 15000;
+    controlSweep();
+    // Wheel 2 lost every attempt: no fault, but its command was never
+    // acknowledged, so the new targets are not applied yet.
+    assert(faultCode == NO_FAULT);
+    assert(!stopPending);
+    assert(simMotor[1].dropReplies == 0);
+    assert(lastAppliedSequence == prior);
+    // The wheel answers again. Whether the sweep that merely re-sends its last
+    // current counts is left open; once its normal control has resumed, the
+    // targets are applied.
+    previousSweepUs = micros() - 15000;
+    controlSweep();
+    previousSweepUs = micros() - 15000;
+    controlSweep();
+    assert(faultCode == NO_FAULT);
+    assert(lastAppliedSequence == targetSeq);
+    return;
+  }
+  if (name == "drive_stale_holds_current") {
+    ready();
+    runFor(1500, true, 2000, 1);
+    // No temperature poll may give wheel 1 a valid reply between its failed
+    // sweep and the next one.
+    for (auto &x : wheel)
+      x.lastInfoMs = millis();
+    // A target step makes every sweep command a clearly different current. At a
+    // steady state the controller's output barely moves between sweeps, so
+    // neither a re-sent nor a recomputed current could be told apart.
+    sendTargets(3500, 1);
+    runOneSweep(3500, 1);
+    runOneSweep(3500, 1);
+    const int16_t acknowledged = wheel[1].lastCommandedMa;
+    assert(acknowledged > 100);
+    // One sweep in which wheel 1 loses every attempt.
+    unsigned commands[4];
+    for (int i = 0; i < 4; i++)
+      commands[i] = simMotor[i].commands;
+    simMotor[1].dropReplies = kAttempts;
+    runOneSweep(3500, 1);
+    assert(faultCode == NO_FAULT);
+    assert(simMotor[1].dropReplies == 0);
+    assert(simMotor[1].commands == commands[1] + kAttempts);
+    for (int i = 0; i < 4; i++)
+      if (i != 1)
+        assert(simMotor[i].commands == commands[i] + 1);
+    assert(wheel[1].lastCommandedMa == acknowledged);
+    // The motor applied that unacknowledged command, so a re-sent current is
+    // distinguishable from it.
+    assert(std::fabs(simMotor[1].currentMa - acknowledged) > 10);
+    const float integral = wheel[1].integralRpmS, ramp = wheel[1].rampRpm;
+    float ramps[4];
+    for (int i = 0; i < 4; i++)
+      ramps[i] = wheel[i].rampRpm;
+    // The next sweep succeeds. Wheel 1 has no valid reply since its last
+    // command, so its controller must not run on that stale feedback: its last
+    // acknowledged current is sent again and its controller state stands still.
+    runOneSweep(3500, 1);
+    assert(faultCode == NO_FAULT);
+    near(simMotor[1].currentMa, acknowledged, 0.5f);
+    assert(wheel[1].integralRpmS == integral);
+    assert(wheel[1].rampRpm == ramp);
+    for (int i = 0; i < 4; i++)
+      if (i != 1) {
+        assert(wheel[i].rampRpm > ramps[i]);
+        near(simMotor[i].currentMa, wheel[i].lastCommandedMa, 0.5f);
+      }
+    // A valid reply has arrived: normal control resumes on the sweep after.
+    runOneSweep(3500, 1);
+    assert(faultCode == NO_FAULT);
+    assert(wheel[1].rampRpm > ramp);
+    assert(std::fabs(simMotor[1].currentMa - acknowledged) > 10);
+    near(simMotor[1].currentMa, wheel[1].lastCommandedMa, 0.5f);
+    assert(motionState());
+    return;
+  }
+  if (name == "drive_info_poll_retry") {
+    // The temperature/info poll follows the same rules as a command: retried at
+    // once, and when all attempts fail the same wheel is polled again next sweep.
+    ready();
+    runFor(1500, true, 2000, 1);
+    const uint8_t w = 2, other = 3;
+    const uint32_t overdue = cfg.tempPollMs + 20;
+    // Only `w` and `other` are due for a poll, `w` first in the rotation.
+    for (auto &x : wheel)
+      x.lastInfoMs = millis();
+    wheel[w].lastInfoMs = wheel[other].lastInfoMs = millis() - overdue;
+    infoCursor = w;
+    // Each wheel's command is its first request of a sweep and the poll its second.
+    simMotor[w].passRequests = 1;
+    simMotor[w].dropReplies = 1;
+    unsigned queries = simMotor[w].queries, commands = simMotor[w].commands,
+             others = simMotor[other].queries;
+    runOneSweep(2000, 1);
+    assert(faultCode == NO_FAULT);
+    assert(simMotor[w].dropReplies == 0);
+    assert(simMotor[w].queries == queries + 2);
+    assert(simMotor[w].commands == commands + 1);
+    assert(simMotor[other].queries == others);
+    assert(millis() - wheel[w].lastInfoMs < 50);
+    runFor(30, true, 2000, 1);
+    expectReplyRetry(w);
+    // All attempts of the poll fail: no fault, and `w` stays first in line.
+    wheel[w].lastInfoMs = wheel[other].lastInfoMs = millis() - overdue;
+    infoCursor = w;
+    simMotor[w].passRequests = 1;
+    simMotor[w].dropReplies = kAttempts;
+    queries = simMotor[w].queries;
+    runOneSweep(2000, 1);
+    assert(faultCode == NO_FAULT);
+    assert(simMotor[w].dropReplies == 0);
+    assert(simMotor[w].queries == queries + kAttempts);
+    // The next sweep polls `w` again, not the next wheel in line.
+    others = simMotor[other].queries;
+    runOneSweep(2000, 1);
+    assert(faultCode == NO_FAULT);
+    assert(simMotor[w].queries == queries + kAttempts + 1);
+    assert(simMotor[other].queries == others);
+    assert(millis() - wheel[w].lastInfoMs < 50);
+    return;
+  }
+  if (name == "drive_limit_follows_last_failure") {
+    // At the feedback limit the fault kind follows the wheel's most recent failed
+    // attempt, not its first: garbled then silent is a timeout, silent then
+    // garbled is a bad frame.
+    ready();
+    const uint8_t w = 1;
+    for (bool garbledLast : {false, true}) {
+      runFor(1500, true, 2000, 1);
+      for (auto &x : wheel)
+        x.lastInfoMs = millis();
+      const uint32_t t0 = millis();
+      simMotor[w].corrupt = !garbledLast;
+      simMotor[w].absent = garbledLast;
+      runFor(70, true, 2000, 1);
+      assert(faultCode == NO_FAULT);
+      simMotor[w].corrupt = garbledLast;
+      simMotor[w].absent = !garbledLast;
+      while (faultCode == NO_FAULT) {
+        assert(millis() - t0 < 400);
+        if (millis() - lastTargetMs >= 50)
+          sendTargets(2000, 1);
+        loop();
+        advanceUs(1000);
+      }
+      assert(faultCode == (garbledLast ? BAD_MOTOR_FRAME : MOTOR_TIMEOUT));
+      assert(faultWheel == w + 1);
+      simMotor[w].corrupt = simMotor[w].absent = false;
+      runFor(4500);
+      assert(faultCode == NO_FAULT);
+      assert(state == DISARMED);
+      arm();
+    }
+    return;
+  }
+  if (name == "disarmed_single_drop") {
+    // A disarmed poll makes up to three requests per wheel: the info query, a
+    // re-query after repairing a motor that is not in speed mode, and the zero
+    // command. One dropped reply at any of them is retried and goes unnoticed.
+    boot();
+    hello();
+    configure();
+    for (uint8_t startMode : {2, 1}) {
+      unsigned at = 0;
+      for (;; at++) {
+        assert(at < 8);
+        const uint8_t w = (at + startMode) % 4;
+        simMotor[w].mode = startMode;
+        simMotor[w].passRequests = at;
+        simMotor[w].dropReplies = 1;
+        nextDisarmedPollMs = 0;
+        pollDisarmed();
+        const bool reached = simMotor[w].dropReplies == 0;
+        clearSimFaults(simMotor[w]);
+        if (!reached)
+          break;
+        assert(state == DISARMED);
+        assert(faultCode == NO_FAULT);
+        assert(stopState == 3);
+        assert(simMotor[w].mode == 2);
+        runFor(30);
+        expectReplyRetry(w);
+        runFor(770);
+        expectReplyRetry(w);
+        runFor(300);
+        expectReplyRetry(-1);
+      }
+      assert(at >= (startMode == 2 ? 2u : 3u));
+    }
+    // The warning is informational: with REPLY_RETRY raised, arming and driving
+    // still go ahead.
+    simMotor[1].dropReplies = 1;
+    nextDisarmedPollMs = 0;
+    pollDisarmed();
+    runFor(30);
+    expectReplyRetry(1);
+    arm();
+    runFor(300, true, 2000, 1);
+    expectReplyRetry(1);
+    assert(state == ARMED);
+    assert(faultCode == NO_FAULT);
+    return;
+  }
+  if (name == "disarmed_hold_single_drop") {
+    // Powered holding while disarmed is a current-mode state as well: a missed
+    // reply is retried, and a sweep that loses every attempt for one wheel
+    // neither faults nor ends the hold.
+    boot();
+    hello();
+    cfg.disarmedHoldEnabled = 1;
+    configure();
+    runFor(500);
+    assert(disarmedHolding);
+    assert(state == HOLDING);
+    const uint8_t w = 1;
+    unsigned commands = simMotor[w].commands;
+    simMotor[w].dropReplies = 1;
+    runOneSweep();
+    assert(simMotor[w].dropReplies == 0);
+    assert(faultCode == NO_FAULT);
+    assert(disarmedHolding && state == HOLDING);
+    assert(simMotor[w].commands == commands + 2);
+    assert(stopState == 3);
+    runFor(30);
+    expectReplyRetry(w);
+    commands = simMotor[w].commands;
+    simMotor[w].dropReplies = kAttempts;
+    runOneSweep();
+    assert(simMotor[w].dropReplies == 0);
+    assert(faultCode == NO_FAULT);
+    assert(simMotor[w].commands == commands + kAttempts);
+    runOneSweep();
+    runOneSweep();
+    assert(faultCode == NO_FAULT);
+    assert(disarmedHolding && state == HOLDING);
+    assert(stopState == 3);
+    return;
+  }
+  if (name == "disarmed_retry_bounded") {
+    // A wheel missing for exactly one poll gets three info queries, no more,
+    // and the poll then latches the failure on that wheel as it always has.
+    boot();
+    hello();
+    configure();
+    const uint8_t w = 2;
+    for (bool garbled : {false, true}) {
+      const unsigned queries = simMotor[w].queries,
+                     commands = simMotor[w].commands;
+      (garbled ? simMotor[w].corrupt : simMotor[w].absent) = true;
+      nextDisarmedPollMs = 0;
+      pollDisarmed();
+      (garbled ? simMotor[w].corrupt : simMotor[w].absent) = false;
+      assert(simMotor[w].queries == queries + kAttempts);
+      assert(simMotor[w].commands == commands);
+      assert(faultCode == (garbled ? BAD_MOTOR_FRAME : MOTOR_TIMEOUT));
+      assert(faultWheel == w + 1);
+      assert(state == FAULT);
+      if (!garbled) {
+        runFor(4500);
+        assert(faultCode == NO_FAULT);
+        assert(state == DISARMED);
+      }
+    }
+    return;
+  }
+  if (name == "arm_single_drop") {
+    // Arming asks every motor for its mode, then commands zero current: one
+    // dropped reply at either request is retried and arming still succeeds.
+    boot();
+    hello();
+    configure();
+    unsigned at = 0;
+    for (;; at++) {
+      assert(at < 8);
+      const uint8_t w = at % 4;
+      ProtocolV2::ArmPayload p{{bootId, hostSession}, configId};
+      handleHostFrame(ARM, ++seq, reinterpret_cast<uint8_t *>(&p), sizeof(p));
+      assert(armPending);
+      simMotor[w].passRequests = at;
+      simMotor[w].dropReplies = 1;
+      loop();
+      const bool reached = simMotor[w].dropReplies == 0;
+      clearSimFaults(simMotor[w]);
+      assert(motionState());
+      assert(faultCode == NO_FAULT);
+      assert(!unsafePositionCommands);
+      if (!reached)
+        break;
+      runFor(30, true);
+      expectReplyRetry(w);
+      runFor(770, true);
+      expectReplyRetry(w);
+      runFor(300, true);
+      expectReplyRetry(-1);
+      assert(faultCode == NO_FAULT);
+      handleHostFrame(STOP, ++seq, nullptr, 0);
+      runFor(500);
+      assert(state == DISARMED);
+      assert(stopState == 3);
+    }
+    assert(at >= 2);
+    return;
+  }
+  if (name == "arm_retry_bounded") {
+    // A wheel that never answers during arming gets three info queries, no
+    // more. The arm then fails as it always has and no current is commanded.
+    boot();
+    hello();
+    configure();
+    const uint8_t w = 2;
+    for (bool garbled : {false, true}) {
+      const unsigned queries = simMotor[w].queries,
+                     commands = simMotor[w].commands;
+      (garbled ? simMotor[w].corrupt : simMotor[w].absent) = true;
+      ProtocolV2::ArmPayload p{{bootId, hostSession}, configId};
+      handleHostFrame(ARM, ++seq, reinterpret_cast<uint8_t *>(&p), sizeof(p));
+      assert(armPending);
+      processArm();
+      (garbled ? simMotor[w].corrupt : simMotor[w].absent) = false;
+      assert(simMotor[w].queries == queries + kAttempts);
+      assert(simMotor[w].commands == commands);
+      assert(faultCode == (garbled ? BAD_MOTOR_FRAME : MOTOR_TIMEOUT));
+      assert(faultWheel == w + 1);
+      assert(stopPending);
+      assert(!motionState());
+      assert(!unsafePositionCommands);
+      if (!garbled) {
+        runFor(4500);
+        assert(faultCode == NO_FAULT);
+        assert(state == DISARMED);
+      }
+    }
+    return;
+  }
+  if (name == "stop_single_drop") {
+    // The stop sequence asks each motor for its mode, zeroes its current,
+    // switches it to speed mode and verifies that: four requests per wheel. One
+    // dropped reply at any of them is retried; the stop still completes.
+    ready();
+    unsigned at = 0;
+    for (;; at++) {
+      assert(at < 8);
+      const uint8_t w = at % 4;
+      runFor(400, true, 2000, 1);
+      handleHostFrame(STOP, ++seq, nullptr, 0);
+      assert(stopPending);
+      simMotor[w].passRequests = at;
+      simMotor[w].dropReplies = 1;
+      loop();
+      const bool reached = simMotor[w].dropReplies == 0;
+      clearSimFaults(simMotor[w]);
+      assert(faultCode == NO_FAULT);
+      if (reached) {
+        runFor(30);
+        expectReplyRetry(w);
+        runFor(470);
+      } else
+        runFor(500);
+      assert(faultCode == NO_FAULT);
+      assert(stopState == 3);
+      assert(state == DISARMED);
+      assert(simMotor[w].mode == 2);
+      assert(std::fabs(simMotor[w].rpm) < 1);
+      assert(simMotor[w].currentMa == 0);
+      if (!reached)
+        break;
+      runFor(300);
+      expectReplyRetry(w);
+      runFor(300);
+      expectReplyRetry(-1);
+      arm();
+    }
+    assert(at >= 4);
+    return;
+  }
+  if (name == "stop_retry_bounded") {
+    // A wheel that never answers during a stop is asked twice, once for its
+    // mode and once to verify speed mode, and each time three attempts, no
+    // more. It never gets a command; the failure latches on that wheel.
+    ready();
+    const uint8_t w = 1;
+    for (bool garbled : {false, true}) {
+      runFor(300, true, 2000, 1);
+      const unsigned queries = simMotor[w].queries,
+                     commands = simMotor[w].commands;
+      (garbled ? simMotor[w].corrupt : simMotor[w].absent) = true;
+      handleHostFrame(STOP, ++seq, nullptr, 0);
+      loop();
+      (garbled ? simMotor[w].corrupt : simMotor[w].absent) = false;
+      assert(simMotor[w].queries == queries + 2 * kAttempts);
+      assert(simMotor[w].commands == commands);
+      assert(faultCode == (garbled ? BAD_MOTOR_FRAME : MOTOR_TIMEOUT));
+      assert(faultWheel == w + 1);
+      assert(state == FAULT);
+      for (int i = 0; i < 4; i++)
+        if (i != w)
+          assert(simMotor[i].mode == 2);
+      if (!garbled) {
+        runFor(4500);
+        assert(faultCode == NO_FAULT);
+        assert(state == DISARMED);
+        arm();
+      }
+    }
+    return;
+  }
+  if (name == "no_retry_definite_results") {
+    // Only transport failures are retried. A stop that interrupts a command and
+    // a reply from a motor in the wrong mode are answers, not misses.
+    ready();
+    sendTargets(3000);
+    injectStopAfterWheel = 2;
+    unsigned commands[4];
+    for (int i = 0; i < 4; i++)
+      commands[i] = simMotor[i].commands;
+    previousSweepUs = micros() - 15000;
+    controlSweep();
+    assert(stopPending);
+    assert(faultCode == NO_FAULT);
+    assert(simMotor[0].commands == commands[0] + 1);
+    assert(simMotor[1].commands == commands[1] + 1);
+    assert(simMotor[2].commands == commands[2]);
+    assert(simMotor[3].commands == commands[3]);
+    runFor(500);
+    assert(state == DISARMED);
+    assert(stopState == 3);
+    arm();
+    runFor(300, true, 2000, 1);
+    simMotor[2].mode = 2;
+    const unsigned before = simMotor[2].commands;
+    runOneSweep(2000, 1);
+    assert(faultCode == MOTOR_FAULT);
+    assert(faultWheel == 3);
+    assert(simMotor[2].commands == before + 1);
     return;
   }
   throw std::runtime_error("unknown simulator case " + name);

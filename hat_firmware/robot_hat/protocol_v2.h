@@ -62,6 +62,7 @@ enum class Reason : uint32_t {
   SESSION_MISMATCH = 32768,
   SPEED_ERROR = 65536,
   INSPECTION_REQUIRED = 131072,
+  REPLY_RETRY = 262144,
 };
 enum class Capability : uint32_t {
   PROFILES = 1,
