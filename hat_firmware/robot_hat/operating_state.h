@@ -12,6 +12,7 @@ static void resetDrive() {
     Wheel &w = wheel[i];
     w.rampRpm = w.integralRpmS = 0;
     w.lastCommandedMa = 0;
+    w.unacked = false;
     w.stallSinceMs = w.currentSinceMs = w.reverseSinceMs = w.saturationSinceMs =
         0;
   }
@@ -31,7 +32,7 @@ static void performStop() {
   // current/speed wheel promptly, then verify the speed mode for each wheel.
   uint8_t modes[4] = {};
   for (uint8_t id = 1; id <= 4; id++) {
-    const MotorResult r = motorTransaction(id, true, 0, 0, false);
+    const MotorResult r = motorTransactionRetry(id, true, 0, 0, false);
     if (r == MOTOR_OK)
       modes[id - 1] = wheel[id - 1].mode;
     else
@@ -40,16 +41,16 @@ static void performStop() {
   for (uint8_t id = 1; id <= 4; id++)
     if (modes[id - 1] == 1 || modes[id - 1] == 2) {
       const MotorResult r =
-          motorTransaction(id, false, 0, modes[id - 1], false);
+          motorTransactionRetry(id, false, 0, modes[id - 1], false);
       if (r != MOTOR_OK)
         latchFault(motorFailure(r), id);
     }
   for (uint8_t id = 1; id <= 4; id++)
     sendMotorMode(id, 2);
   for (uint8_t id = 1; id <= 4; id++) {
-    MotorResult r = motorTransaction(id, true, 0, 2, false);
+    MotorResult r = motorTransactionRetry(id, true, 0, 2, false);
     if (r == MOTOR_OK)
-      r = motorTransaction(id, false, 0, 2, false);
+      r = motorTransactionRetry(id, false, 0, 2, false);
     if (r != MOTOR_OK)
       latchFault(motorFailure(r), id);
   }
@@ -73,7 +74,7 @@ static bool selectCurrentSafely() {
   for (uint8_t id = 1; id <= 4; id++) {
     if (stopPending)
       return false;
-    const MotorResult r = motorTransaction(id, true, 0, 1, true);
+    const MotorResult r = motorTransactionRetry(id, true, 0, 1, true);
     if (r == MOTOR_INTERRUPTED)
       return false;
     if (r != MOTOR_OK) {
@@ -195,22 +196,36 @@ static void controlSweep() {
         settleStartedMs = 0;
     }
   }
+  // Targets count as applied only when every wheel's command, freshly computed
+  // from them, was acknowledged.
+  bool applied = true;
   for (uint8_t i = 0; i < 4; i++) {
     pollHost();
     if (stopPending)
       return;
-    const int16_t current = calculateCurrent(i, dt);
+    // No valid reply since its last command: the feedback is stale, so send
+    // that command again and leave the speed or hold controller untouched.
+    const bool resend = wheel[i].unacked;
+    const int16_t current =
+        resend ? wheel[i].lastCommandedMa : calculateCurrent(i, dt);
     if (stopPending)
       return;
     const MotorResult r = sendCurrentMa(i + 1, current, 1, true);
     if (r == MOTOR_INTERRUPTED)
       return;
-    if (r != MOTOR_OK) {
+    if (r == MOTOR_NO_REPLY || r == MOTOR_BAD_REPLY) {
+      // Every attempt failed: skip the wheel and never health-check stale data.
+      // protectionUpdate faults it once feedbackMs passes with no valid reply.
+      wheel[i].unacked = true;
+      applied = false;
+    } else if (r != MOTOR_OK) {
       trip(motorFailure(r), i + 1);
       return;
+    } else {
+      wheel[i].lastCommandedMa = current;
+      applied = applied && !resend;
+      checkWheelHealth(i, current);
     }
-    wheel[i].lastCommandedMa = current;
-    checkWheelHealth(i, current);
     if (stopPending)
       return;
   }
@@ -219,9 +234,13 @@ static void controlSweep() {
     if (wheel[i].temperatureValid &&
         millis() - wheel[i].lastInfoMs < cfg.tempPollMs)
       continue;
-    const MotorResult r = motorTransaction(i + 1, true, 0, 1, true);
+    const MotorResult r = motorTransactionRetry(i + 1, true, 0, 1, true);
     if (r == MOTOR_INTERRUPTED)
       return;
+    // All attempts failed: no fault and no health check; the cursor stays so
+    // the same wheel is polled again next sweep.
+    if (r == MOTOR_NO_REPLY || r == MOTOR_BAD_REPLY)
+      break;
     if (r != MOTOR_OK) {
       trip(motorFailure(r), i + 1);
       return;
@@ -232,7 +251,7 @@ static void controlSweep() {
   }
   if (disarmedHolding)
     stopState = allCurrentStationary() ? 3 : 4;
-  if (!disarmedHolding)
+  if (!disarmedHolding && applied)
     markApplied(sweepSequence);
   lastSweepUs = micros() - began;
   completedProgress();
@@ -260,15 +279,15 @@ static void pollDisarmed() {
   for (uint8_t id = 1; id <= 4; id++) {
     // Existing faults never terminate this loop. Every wheel gets bounded
     // stop polls, including mode repair, independent of fault severity.
-    MotorResult r = motorTransaction(id, true, 0, 0, true);
+    MotorResult r = motorTransactionRetry(id, true, 0, 0, true);
     if (r == MOTOR_INTERRUPTED)
       return;
     if (r == MOTOR_OK && wheel[id - 1].mode != 2) {
       sendMotorMode(id, 2);
-      r = motorTransaction(id, true, 0, 2, true);
+      r = motorTransactionRetry(id, true, 0, 2, true);
     }
     if (r == MOTOR_OK)
-      r = motorTransaction(id, false, 0, 2, true);
+      r = motorTransactionRetry(id, false, 0, 2, true);
     if (r == MOTOR_OK)
       stopObserved[id - 1] = true;
     else {

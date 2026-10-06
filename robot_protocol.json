@@ -58,7 +58,8 @@
       "CONFIG_REJECTED": 16384,
       "SESSION_MISMATCH": 32768,
       "SPEED_ERROR": 65536,
-      "INSPECTION_REQUIRED": 131072
+      "INSPECTION_REQUIRED": 131072,
+      "REPLY_RETRY": 262144
     },
     "Capability": {
       "PROFILES": 1,

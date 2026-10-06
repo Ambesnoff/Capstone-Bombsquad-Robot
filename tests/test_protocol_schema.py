@@ -8,7 +8,7 @@ import sys
 import unittest
 
 from fast_hat import FastConfig, FrameParser, FrameType, Profile, decode_status, encode_frame
-from protocol_defs import CONFIG_FIELDS, CONFIG_PREFIX, CONFIG_SPEC, CONFIG_STRUCT, TARGETS_STRUCT, validate_config
+from protocol_defs import CONFIG_FIELDS, CONFIG_PREFIX, CONFIG_SPEC, CONFIG_STRUCT, Reason, TARGETS_STRUCT, validate_config
 try:from native_toolchain import build_native
 except ImportError:from tests.native_toolchain import build_native
 
@@ -32,6 +32,10 @@ class GeneratedDefinitionTests(unittest.TestCase):
             self.assertEqual(bool(re.search(rf'c\.{name} < {field["min"]}\b',ranges)),field['min']>0,name+' min')
             self.assertEqual(bool(re.search(rf'c\.{name} > {field["max"]}\b',ranges)),
                              field['max']<WIRE_MAX[field['type']],name+' max')
+
+    def test_reply_retry_reason_is_wire_bit_18(self):
+        # Informational reason: the firmware reports a recently retried motor reply for 1000 ms.
+        self.assertEqual(Reason.REPLY_RETRY,262144)
 
     def test_python_validator_keeps_every_bound(self):
         baseline={field['name']:field['default'] for field in CONFIG_SPEC}

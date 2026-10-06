@@ -93,6 +93,8 @@ static MotorResult motorTransaction(uint8_t id, bool info, int16_t command,
         w.error = reply[8];
         w.lastFeedbackMs = now;
         w.valid = true;
+        w.lastFailure = MOTOR_OK;
+        w.unacked = false;
         if (info) {
           w.tempC = reply[6];
           w.lastInfoMs = now;
@@ -116,11 +118,36 @@ static MotorResult motorTransaction(uint8_t id, bool info, int16_t command,
   }
   return bad ? MOTOR_BAD_REPLY : MOTOR_NO_REPLY;
 }
+// Retries a missed or garbled reply at once, MOTOR_ATTEMPTS in all, and returns
+// the last attempt's result. Wrong-mode, interrupted and error-byte replies are
+// answers, not misses, and are never retried. An abortable transaction is not
+// retried once a stop is pending.
+static MotorResult motorTransactionRetry(uint8_t id, bool info, int16_t command,
+                                         uint8_t expectedMode,
+                                         bool allowAbort) {
+  Wheel &w = wheel[id - 1];
+  MotorResult r = MOTOR_OK;
+  for (uint8_t attempt = 0; attempt < MOTOR_ATTEMPTS; attempt++) {
+    r = motorTransaction(id, info, command, expectedMode, allowAbort);
+    if (r != MOTOR_NO_REPLY && r != MOTOR_BAD_REPLY)
+      break;
+    const uint32_t now = millis();
+    w.lastFailure = r;
+    w.failedMs = now ? now : 1;
+    // protectionUpdate rebuilds the reason from failedMs; set it now too so a
+    // status sent before the next update already shows it.
+    w.reason |= R_REPLY_RETRY;
+    reasonFlags |= R_REPLY_RETRY;
+    if (allowAbort && stopPending)
+      break;
+  }
+  return r;
+}
 static MotorResult sendCurrentMa(uint8_t id, int16_t ma, uint8_t expectedMode,
                                  bool allowAbort) {
   const int16_t bounded =
       clampS16(ma, -HARD_MAX_CURRENT_MA, HARD_MAX_CURRENT_MA);
-  return motorTransaction(
+  return motorTransactionRetry(
       id, false,
       clampS16(static_cast<int32_t>(bounded) * 32767 / 8000, -32767, 32767),
       expectedMode, allowAbort);

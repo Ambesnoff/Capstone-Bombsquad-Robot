@@ -11,7 +11,7 @@ The fast example implements the user's updated requirements: **SB selects Gentle
 | Reproducible original baseline and Git isolation | Original archive verified with all 44 original tests; separate baseline and GPT branches; `.gitignore`, `requirements.txt`, `hat_firmware/toolchain.lock.json`, `tools/release.py` |
 | Pi stop race and command ownership | `fast_robot.py`, `robot_main.py`, `fast_hat.py`; shutdown cancellation, sole supervisor writer, rechecks around pending ARM/targets, transport stop generation; regression tests reproduce the original second-snapshot race and stop during pending ARM |
 | Fault-independent stop verification | `operating_state.h`, `FastRobot._wait_disarmed`; bounded wheel polling continues while faults are latched; fresh four-wheel stationary feedback required independently of fault severity |
-| Mode-safe transitions and old STOP | Mode write, query, confirm before current setpoints; old STOP always inhibits without moving freshness backward; native tests for wrong mode, missing replies, replay, and sequence rollover |
+| Mode-safe transitions and old STOP | Mode write, query, confirm before current setpoints; old STOP always inhibits without moving freshness backward; native tests for wrong mode, missing replies, replay, and sequence rollover. A missed or garbled reply is retried (3 attempts); a driving wheel that misses all is skipped and faults only after `feedback_timeout_ms`, with an informational `REPLY_RETRY` reason |
 | Progress watchdog | ESP32 task-watchdog user with one-second timeout and panic/reset enabled; feed only after bounded completed work; actual board compilation and native reboot-entry test |
 | Protocol v2 | `robot_protocol.json`, checked generated Python/C++ definitions, `fast_hat.py`, `host_protocol.h`, `HAT_PROTOCOL.md`; boot/session/config/build/capability identities, accepted/applied sequence and timing, exact configuration acknowledgment, separate validity/ages/stop progress |
 | Strict complete configuration | `robot_config.py`, `generate_protocol.py`; immutable settings, unit/range/type/relationship validation shared with firmware, stable configuration identity, stopped application requirement |
@@ -36,6 +36,7 @@ The complete Python test suite, generated-definition check, firmware-source iden
 - Firmware source SHA256: `bf82bb7d88316ec81bf876dae3cf9849ce8f771e8ab5dc602da510937d7eebe5`; reported build ID `0xbf82bb7d`.
 - Firmware compilation after review fixes: **283444 bytes flash, 23068 bytes RAM**.
 - **Superseded by the audit fixes (PR #2, see `AUDIT.md`):** the firmware sources changed, so the build ID is now `0x4ff06011` and the ESP32 compile above no longer applies. Recompile with Arduino-ESP32 3.3.12 and record the new sizes. `python3 tools/verify.py` (Python 3.14.8) runs the software checks under Clang and GNU GCC.
+- **Superseded again by the reply-retry change:** the firmware sources changed, so the build ID is now `0xca638f3b` (3395522363). This change has only been compiled for the native simulator; recompile with Arduino-ESP32 3.3.12 before flashing.
 - The native simulator is behavioral evidence. Its mechanics, temperature evolution and watchdog reboot modeling are not calibration of the real robot.
 
 Reproduce from the checkout:
