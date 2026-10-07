@@ -208,6 +208,7 @@ class Settings:
     radio_telemetry_hz: float = 2.0
     telemetry_queue_rows: int = 32
     live_status_hz: float = 1.0
+    pivot_gain: float = 0.0
 
     @classmethod
     def from_dict(cls, raw: Any) -> Settings:
@@ -270,6 +271,7 @@ class Settings:
             acceleration_rpm_s=_number(data["acceleration_rpm_s"], "acceleration_rpm_s", 1, 1000),
             deceleration_rpm_s=_number(data["deceleration_rpm_s"], "deceleration_rpm_s", 1, 2000),
             steering_gain=_number(data["steering_gain"], "steering_gain", 0, 1),
+            pivot_gain=_number(data.get("pivot_gain", 0), "pivot_gain", 0, 1),
             kp_a_per_rpm=_number(data["kp_a_per_rpm"], "kp_a_per_rpm", 0, 1),
             ki_a_per_rpm_s=_number(data["ki_a_per_rpm_s"], "ki_a_per_rpm_s", 0, 1),
             loop_period_s=_number(loop_period, "loop_period_s", 0.05, 1),

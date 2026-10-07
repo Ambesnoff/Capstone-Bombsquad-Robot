@@ -68,6 +68,13 @@ SOFTWARE CHECKS
   firmware_build_id must be 3395522363 (0xca638f3b, the reply-retry firmware).
   1341153297 (0x4ff06011) or 3213015933 means older firmware is still on the HAT.
 
+PIVOT / RAMPS  (see docs/UPDATE_RAMPS_PIVOT.md)
+- Wheels raised, pivot_gain above 0, zero throttle, stick right: left wheels
+  forward, right wheels backward. Switch low plus a little throttle: tyre tops
+  roll toward the front; stick right makes the left side faster.
+- Release the stick: the wheels must stop within about 0.3 s.
+- Bring the throttle to zero before moving the reverse switch.
+
 REPOSITORY HOUSEKEEPING
 - Done: removed the redundant baseline zip and CLEANUP.md. The original
   pre-v2 code is the "baseline/original-v1" branch; keep it.

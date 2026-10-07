@@ -108,10 +108,18 @@ def drive_request(snapshot: CRSFSnapshot, settings: Settings,
 
 
 def wheel_targets(request: DriveRequest, settings: Settings) -> dict[int, float]:
-    """Logical forward RPM; wheel polarity is applied only at the motor boundary."""
-    throttle = request.throttle if request.current_cap_a > 0.05 else 0.0
+    """Logical forward RPM; wheel polarity is applied only at the motor boundary.
+
+    Stick right always makes the left side faster than the right, so the robot
+    turns to its own right (clockwise from above) driving forward, in reverse and
+    when pivoting. At zero throttle it pivots in place at pivot_gain * max_rpm per
+    side; the pivot share fades out as throttle rises and is gone at full throttle.
+    """
+    if request.current_cap_a <= 0.05:
+        return {wheel.motor_id: 0.0 for wheel in settings.wheels}
+    throttle = request.throttle
     linear = throttle * (-1 if request.reverse else 1)
-    turn = request.steering * throttle * settings.steering_gain
+    turn = request.steering * (throttle * settings.steering_gain + (1 - throttle) * settings.pivot_gain)
     left, right = linear + turn, linear - turn
     scale = max(1, abs(left), abs(right))
     return {
