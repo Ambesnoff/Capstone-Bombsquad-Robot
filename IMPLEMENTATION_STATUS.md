@@ -4,6 +4,10 @@ This is the software implementation of the attached **Robot architecture & imple
 
 The fast example implements the user's updated requirements: **SB selects Gentle / Normal / Boost**, mapped to CH6 by the example EdgeTX mixes, and the **1.2 A ceiling is removed**. Profile caps are 800 / 1500 / 2500 mA, with a separate 2700 mA absolute ceiling. Current is a permitted envelope, not constant commanded current. Boost starts empty on an ESP32 reset and becomes available through the configured cool, fault-free refill policy. Protection or an exhausted budget can reduce the applied mode; the live view and logs explain that reduction.
 
+## Shared 250 rpm update
+
+The `codex/shared-250-rpm` change extends Pi/HAT validation to 250 rpm, updates the fast example, and adds requirement tests. Its generated definitions and firmware identity were refreshed and its source was reviewed, but tests, firmware compilation and hardware trials were not run for this change. Earlier verification records below describe earlier builds; they do not certify this update. Upload steps are in [the update guide](docs/UPDATE_250_RPM.md).
+
 ## Delivered work
 
 | Plan requirement | Implementation and evidence |
