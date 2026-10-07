@@ -13,7 +13,8 @@ static constexpr uint32_t MOTOR_REPLY_TIMEOUT_US = 8000;
 // REPLY_RETRY stays reported for REPLY_RETRY_MS after a wheel's last failure.
 static constexpr uint8_t MOTOR_ATTEMPTS = 3;
 static constexpr uint16_t REPLY_RETRY_MS = 1000;
-static constexpr uint16_t HARD_MAX_RPM = 200, HARD_MAX_CURRENT_MA = 2700;
+static constexpr uint16_t HARD_MAX_RPM = ProtocolV2::FIRMWARE_MAX_RPM,
+                          HARD_MAX_CURRENT_MA = 2700;
 static constexpr uint8_t HARD_MAX_TEMP_C = 70, STATIONARY_RPM = 2;
 // Whole-chassis neutral enters position holding once every wheel stays at or
 // below this speed for the settle dwell; a slope keeps a coasting wheel just

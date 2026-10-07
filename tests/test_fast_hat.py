@@ -254,7 +254,7 @@ class FastHatTests(unittest.TestCase):
     def test_preconditions_and_invalid_config_do_not_write(self):
         fake = FakeSerial()
         with FastHat('test',serial_port=fake) as hat:
-            with self.assertRaises(ValueError):hat.send_config(replace(FastConfig(),max_rpm=201))
+            with self.assertRaises(ValueError):hat.send_config(replace(FastConfig(),max_rpm=251))
             with self.assertRaises(FastHatError):hat.arm()
             with self.assertRaises(FastHatError):hat.send_config(FastConfig())
             self.assertEqual(fake.writes,[])

@@ -73,7 +73,7 @@ corruption detection; it is not an authenticated communications channel.
 
 Profile values are `0=Gentle`, `1=Normal`, `2=Boost`. Targets are motor-ID order
 1–4, with 0.01 RPM encoding and a maximum absolute target of configured max RPM
-(no more than 200 RPM). Python rounds to the nearest centi-RPM with ties to even.
+(no more than 250 RPM). Python rounds to the nearest centi-RPM with ties to even.
 DDSM115 measured speed remains whole RPM; finer target encoding does not improve
 sensor resolution. TARGETS carries a profile request, never an arbitrary current
 command. A zero target for an inner wheel remains a driving target; whole-robot

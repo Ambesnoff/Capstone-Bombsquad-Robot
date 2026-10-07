@@ -8,6 +8,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from protocol_defs import FIRMWARE_MAX_RPM
+
 
 def _object(value: Any, name: str) -> dict[str, Any]:
     if not isinstance(value, dict):
@@ -263,7 +265,7 @@ class Settings:
             motor_port=data["motor_port"], radio_port=data["radio_port"], wheels=tuple(wheels),
             channels=Channels.from_dict(data["channels"], backend), motor_backend=backend, hat_baud=hat_baud,
             radio_baud=_integer(data.get("radio_baud", 420000), "radio_baud", 9600, 1000000),
-            max_rpm=_integer(data["max_rpm"], "max_rpm", 1, 200 if backend == "fast" else 330),
+            max_rpm=_integer(data["max_rpm"], "max_rpm", 1, FIRMWARE_MAX_RPM if backend == "fast" else 330),
             max_current_a=max_current, neutral_braking_current_a=brake,
             acceleration_rpm_s=_number(data["acceleration_rpm_s"], "acceleration_rpm_s", 1, 1000),
             deceleration_rpm_s=_number(data["deceleration_rpm_s"], "deceleration_rpm_s", 1, 2000),

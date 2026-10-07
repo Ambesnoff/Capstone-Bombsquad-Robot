@@ -30,6 +30,8 @@ def settings() -> Settings:
     data = json.loads(CONFIG.read_text())
     data["motor_port"] = "/dev/test-hat"
     data["radio_port"] = "/dev/test-radio"
+    # Existing controller/protection cases deliberately exercise a 40-rpm config.
+    data["max_rpm"] = 40
     return Settings.from_dict(data)
 
 
@@ -89,7 +91,7 @@ class RobotTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "230400 baud"):
             Settings.from_dict(data)
         data["hat_baud"] = 230400
-        data["max_rpm"] = 201
+        data["max_rpm"] = 251
         with self.assertRaisesRegex(ValueError, "max_rpm"):
             Settings.from_dict(data)
 
