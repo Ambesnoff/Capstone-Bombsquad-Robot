@@ -1,6 +1,6 @@
 # Robot software, firmware, and controller setup
 
-This guide covers the remaining setup for your **Raspberry Pi 4**, **Waveshare DDSM Driver HAT (A)**, **RadioMaster Pocket with built-in 2.4 GHz ExpressLRS**, and **XR4 receiver**. You are handling the wheel IDs and wiring, so those are prerequisites here. The drive program expects **four unique wheel IDs**: 1 front left, 2 front right, 3 rear right, 4 rear left.
+This guide covers the remaining setup for your **Raspberry Pi 4**, **Waveshare DDSM Driver HAT (A)**, **RadioMaster Pocket with built-in 2.4 GHz ExpressLRS**, and **XR4 receiver**. This guide includes the XR4-to-Pi wiring. Motor wiring and wheel-ID assignment are prerequisites. The drive program expects **four unique wheel IDs**: 1 front left, 2 front right, 3 rear right, 4 rear left.
 
 Two different devices receive software:
 
@@ -82,6 +82,33 @@ ls -l /dev/ttyAMA5
 ~~~
 
 The first check should show **/dev/ttyAMA0**; the second should find **/dev/ttyAMA5**. If your OS has **/boot/config.txt** instead, edit that file. [Official Raspberry Pi UART instructions](https://www.raspberrypi.com/documentation/computers/configuration.html#configure-uarts).
+
+### 3a. Connect the XR4 wires to the Pi
+
+Shut the Pi down with `sudo poweroff`, wait for shutdown, then disconnect all robot power before attaching wires. The XR4 connects through its **main CRSF serial pads** labeled **TX**, **RX**, **5V**, and **− / GND**. Its **TX2/RX2** pads are a second UART and are not used here. The two tiny antenna sockets connect only to the supplied antennas.
+
+There is no single XR4 plug that fits the Pi's header: connect each lead to its own pin in the table below. Use the labels on the receiver, not the wire colors or the order of loose connectors. If the supplied lead ends are bare, solder them to the matching receiver pads and use insulated female jumper ends or a suitable breakout at the Pi; bare wire must not touch adjacent header pins.
+
+| XR4 pad / lead | Connect to the Pi's 40-pin header | Purpose |
+| --- | --- | --- |
+| **5V** | **Physical pin 2 — 5 V** | Receiver power from the robot's existing regulated 5 V rail |
+| **− / GND** | **Physical pin 6 — ground** | Common ground |
+| **TX** (main CRSF output) | **Physical pin 33 — GPIO13 / UART5 RX** | Required: sends the radio channels to the Pi |
+| **RX** (main CRSF input) | **Physical pin 32 — GPIO12 / UART5 TX** | Optional: sends robot telemetry back to the receiver; leave disconnected for the first radio check |
+
+**TX connects to RX, and RX connects to TX.** The table uses **physical pin numbers** to locate the connector: **pin 33 is GPIO13**, not GPIO33. UART5 is the `dtoverlay=uart5` port enabled above and matches `radio_port: /dev/ttyAMA5` and `radio_baud: 420000` in `config.json`. Do not enable UART5 CTS/RTS; those signals would occupy the HAT's GPIO14/15 pins.
+
+![Raspberry Pi 4 GPIO pinout showing XR4 power on pin 2, ground on pin 6, TX to GPIO13 on pin 33, and optional RX to GPIO12 on pin 32](docs/images/xr4-pi4-gpio-wiring.svg)
+
+*Top view of the Pi 4, with USB/Ethernet sockets at the right and the 40-pin GPIO header along the top edge. Pin 1 is at the left end, in the row nearer the board center; pin 2 is directly above it. Count across each row by twos. The diagram marks the physical pins and their GPIO names separately.*
+
+The DDSM Driver HAT (A) occupies the Pi's header. Reach these **same physical pins** using a correctly aligned stack-through header or GPIO breakout that preserves the HAT connections. If the HAT hides the pins, do not guess from the HAT's other connectors. **Pi pins 8 and 10 (GPIO14/15) are reserved for the HAT's serial link**; the XR4 belongs on pins 33/32.
+
+Power the XR4 from **one** regulated 5 V source. Pin 2 is a connection to the Pi's existing 5 V rail, not a separate power input to add to an already powered system. Do not connect the robot battery directly to the receiver, use the 3.3 V pins for receiver power, or join independent 5 V supplies. If using a separate receiver regulator, leave XR4 5V off Pi pin 2 and join its ground to Pi pin 6.
+
+The Pi's GPIO signal pins use **3.3 V logic and are not 5 V tolerant**. The receiver's 5 V supply does not make its serial signals 5 V. Verify the XR4 signal levels before direct connection; use appropriate level translation if they exceed 3.3 V.
+
+These connections follow the [RadioMaster XR4 pad diagram](https://cdn.shopify.com/s/files/1/0609/8324/7079/files/XR4.pdf?v=1739432399), [Raspberry Pi GPIO documentation](https://www.raspberrypi.com/documentation/computers/raspberry-pi.html#gpio), and [official UART5 overlay definition](https://github.com/raspberrypi/linux/blob/rpi-6.12.y/arch/arm/boot/dts/overlays/README). The [RadioMaster product page](https://www.radiomasterrc.com/products/xr4-gemini-xrossband-dual-band-expresslrs-receiver) and manual give different input-voltage ranges; **5 V** is within both. The [Waveshare HAT schematic](https://files.waveshare.com/wiki/DDSM-Driver-HAT-%28A%29/DDSM_Driver_HAT_%28A%29_Sch.pdf) confirms the HAT's serial pins and available GPIO12/13.
 
 ## 4. Copy the drive program to the Pi
 
@@ -203,7 +230,7 @@ cd ~/robot
 
 Logs have unique session names; configuration metadata and events accompany them. The view shows dropped rows and storage errors. A slow or failed disk does not block the drive loop. **40 RPM** and **15 ms** are initial requested settings, not measured performance. Candidate 0.8/1.5/2.5 A profiles and 20 s / 60 s Boost allowance require measured acceptance, with separate electrical/thermal acceptance for Normal and Boost. Follow [COMMISSIONING.md](COMMISSIONING.md) before lowering the robot. Battery/BMS/wiring current is not measured by motor torque telemetry.
 
-For optional radio feedback, connect Pi UART5 TX **GPIO12 / physical pin32** to XR4 CRSF RX (with verified compatible logic levels/common ground), then enable `radio_telemetry_enabled` in the config. The return path publishes a standard CRSF flight-mode/status string for state, applied mode, fault, and Boost availability. Enable a telemetry ratio that carries return data, discover sensors on the Pocket, and verify the displayed state against the local view. Do not present motor current as a measured battery sensor. Radio telemetry implementation still needs physical radio/display verification.
+For optional radio feedback, connect **Pi physical pin 32 / GPIO12 / UART5 TX** to the XR4's main **RX** pad as shown in [the wiring table](#3a-connect-the-xr4-wires-to-the-pi), then enable `radio_telemetry_enabled` in the config. The return path publishes a standard CRSF flight-mode/status string for state, applied mode, fault, and Boost availability. Enable a telemetry ratio that carries return data, discover sensors on the Pocket, and verify the displayed state against the local view. Do not present motor current as a measured battery sensor. Radio telemetry implementation still needs physical radio/display verification.
 
 ## 10. Bounded service recovery (after acceptance)
 
@@ -241,7 +268,7 @@ The firmware source digest is reported as its build identity. The generated prot
 | Pi serial devices wrong | Serial console disabled, hardware serial enabled, overlay lines, reboot. |
 | Serial permission denied | Run **groups** after logging out/in; it should include **dialout**. |
 | Pocket and XR4 will not bind | Both antennas, 5 V receiver power, matching ELRS major versions, RF region, binding phrase, Model Match. |
-| Bound XR4 but no Pi channels | UART5, CRSF output, **/dev/ttyAMA5**, 420000 baud, receiver power. |
+| Bound XR4 but no Pi channels | XR4 main **TX → Pi physical pin 33 / GPIO13**, common ground on pin 6, receiver 5 V power, UART5 enabled, **/dev/ttyAMA5**, 420000 baud; use TX, not TX2. |
 | Channels present but unhealthy | Fresh positive LQ and link-statistics frames. |
 | HAT upload fails | ESP32-USB port, data cable, selected serial port, correct board/core; see Waveshare's BOOT-button procedure. |
 | Inspection fault remains after repair | Record the original cause, repair and verify it, then reset the HAT and restart the Pi supervisor. Both intentionally retain inhibition until reset; use a fresh neutral arm cycle. |
