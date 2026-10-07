@@ -90,7 +90,7 @@ Use a **Mac Terminal** window for this block. It copies runtime modules, factory
 ~~~sh
 ROBOT_PROJECT="$HOME/Desktop/Capstone/Robot Code/Capstone-Bombsquad-Robot"
 ssh robot@robotpi.local 'mkdir -p ~/robot'
-scp "$ROBOT_PROJECT"/*.py "$ROBOT_PROJECT"/requirements.txt "$ROBOT_PROJECT"/config.example.json robot@robotpi.local:~/robot/
+scp "$ROBOT_PROJECT"/*.py "$ROBOT_PROJECT"/robot_protocol.json "$ROBOT_PROJECT"/requirements.txt "$ROBOT_PROJECT"/config.example.json robot@robotpi.local:~/robot/
 scp -r "$ROBOT_PROJECT"/deploy robot@robotpi.local:~/robot/
 ~~~
 

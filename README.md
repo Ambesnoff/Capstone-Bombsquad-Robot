@@ -19,6 +19,8 @@ The mode control is the **RadioMaster Pocket SB three-position switch**. A physi
 
 Channel numbers and mode-switch calibration remain configuration fields. The old S1 current dial is retained only in the factory-firmware legacy backend. Profile changes set the permitted current envelope; they do not directly change requested RPM.
 
+All three profiles share the configured `max_rpm`, set to **250 rpm** in the supplied fast example. Updating the code does not replace an existing configuration; set `max_rpm` to 250 in the robot's active configuration to use that limit in Gentle, Normal and Boost. Lower explicitly configured limits remain supported. Both Pi modules and the complete HAT sketch must be updated before a 250 rpm configuration can be accepted. Requested speed is a target, not a guarantee of measured speed under load.
+
 Motor IDs viewed from above run clockwise: **1 front left, 2 front right, 3 rear right, 4 rear left**. Wheel side and polarity stay configurable. Verify each raised wheel's direction.
 
 ## Implemented behavior

@@ -18,7 +18,7 @@ from typing import Any, Mapping, Sequence
 
 
 from protocol_defs import (
-    SYNC, VERSION, MAX_PAYLOAD, STATUS_LENGTH, FIRMWARE_MAX_CURRENT_MA,
+    SYNC, VERSION, MAX_PAYLOAD, STATUS_LENGTH, FIRMWARE_MAX_RPM, FIRMWARE_MAX_CURRENT_MA,
     FrameType, HatState, Profile, StopState, ConfigResult, Reason, Capability,
     Validity, HoldFlag, FaultCode, CONFIG_FIELDS, CONFIG_SPEC, CONFIG_STRUCT, validate_config,
     STATUS_HEADER_FIELDS, STATUS_HEADER_STRUCT, WHEEL_FIELDS, WHEEL_STRUCT,
@@ -245,7 +245,7 @@ def decode_status(payload: bytes, received_at: float | None = None) -> FastStatu
             temperature, valid = None, valid & ~Validity.TEMPERATURE
         if raw["effective_cap_ma"] > FIRMWARE_MAX_CURRENT_MA or raw["hold_cap_ma"] > FIRMWARE_MAX_CURRENT_MA:
             raise ValueError("Motor cap exceeds firmware hard ceiling")
-        if abs(raw["target_centi_rpm"]) > 20000:
+        if abs(raw["target_centi_rpm"]) > FIRMWARE_MAX_RPM * 100:
             raise ValueError("Invalid wheel target")
         raw["target_rpm"] = raw.pop("target_centi_rpm") / 100.0
         raw["temp_c"] = temperature
@@ -619,7 +619,7 @@ class FastHat:
         if len(rpm_by_id) != 4:
             raise ValueError("Exactly four RPM targets are required")
         encoded = []
-        max_rpm = self._config.max_rpm if self._config else 200
+        max_rpm = self._config.max_rpm if self._config else FIRMWARE_MAX_RPM
         for rpm in rpm_by_id:
             if (isinstance(rpm, bool) or not isinstance(rpm, (int, float))
                     or not math.isfinite(rpm) or abs(rpm) > max_rpm):

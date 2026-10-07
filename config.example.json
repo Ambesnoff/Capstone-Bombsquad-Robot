@@ -34,7 +34,7 @@
     "stop": 7,
     "profile": 6
   },
-  "max_rpm": 40,
+  "max_rpm": 250,
   "max_current_a": 2.7,
   "neutral_braking_current_a": 0.3,
   "acceleration_rpm_s": 120,

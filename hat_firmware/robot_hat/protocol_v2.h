@@ -5,6 +5,7 @@
 namespace ProtocolV2 {
 constexpr uint8_t VERSION = 2;
 constexpr uint8_t MAX_PAYLOAD = 240;
+constexpr uint16_t FIRMWARE_MAX_RPM = 250;
 constexpr uint16_t FIRMWARE_MAX_CURRENT_MA = 2700;
 enum class FrameType : uint8_t {
   HELLO = 1,
@@ -343,7 +344,7 @@ inline Config defaultConfig() {
 }
 inline bool validConfig(const Config &c) {
   // Bounds already guaranteed by a field's C type are omitted (GCC -Wtype-limits).
-  if (c.max_rpm < 1 || c.max_rpm > 200) return false;
+  if (c.max_rpm < 1 || c.max_rpm > 250) return false;
   if (c.max_current_ma < 1 || c.max_current_ma > 2700) return false;
   if (c.neutral_brake_ma > 2700) return false;
   if (c.accel_rpm_s < 1 || c.accel_rpm_s > 5000) return false;

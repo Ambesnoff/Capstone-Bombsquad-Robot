@@ -20,7 +20,8 @@ CONFIG = Path(__file__).resolve().parents[1] / "config.example.json"
 
 
 def settings():
-    data = json.loads(CONFIG.read_text());data.update(motor_port="/dev/test-hat",radio_port="/dev/test-radio")
+    # Keep these existing supervisor scenarios at their explicit 40-rpm baseline.
+    data = json.loads(CONFIG.read_text());data.update(motor_port="/dev/test-hat",radio_port="/dev/test-radio",max_rpm=40)
     return Settings.from_dict(data)
 
 
