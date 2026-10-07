@@ -10,7 +10,7 @@ The mode control is the **RadioMaster Pocket SB three-position switch**. A physi
 
 | Channel | Physical source | Meaning |
 | --- | --- | --- |
-| CH1 | Steering stick | Centered skid steering, no pivot at zero throttle |
+| CH1 | Steering stick | Centered skid steering. Stick right turns the robot to its own right (clockwise from above) going forward, in reverse and when pivoting. With pivot_gain above 0 it pivots in place at zero throttle |
 | CH3 | Throttle stick | Fully low is neutral; higher requests RPM |
 | CH5 | SA latching switch | Low, then a fresh high edge at neutral to arm |
 | CH6 | **SB three-position switch** | Low Gentle, center Normal, high Boost |

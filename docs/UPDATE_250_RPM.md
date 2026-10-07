@@ -2,6 +2,8 @@
 
 This update needs **both** the Pi program and the HAT's ESP32 firmware. Gentle, Normal and Boost share the same 250 rpm maximum target; their current ceilings remain 0.8, 1.5 and 2.5 A. Controller gains and wheel-direction settings are a separate concern. This update does not complete torque tuning.
 
+Ramp, braking and pivot defaults were updated later; see UPDATE_RAMPS_PIVOT.md.
+
 The code is on the `codex/shared-250-rpm` pull-request branch. It has not been merged into `main`. The Mac checkout used for this change is:
 
 `/Users/ambesnoff/Desktop/Capstone/Robot Code/Capstone-Bombsquad-Robot`
